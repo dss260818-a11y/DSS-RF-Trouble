@@ -1,0 +1,13 @@
+{
+  "sourceExcel": "\\<NAS-IP>\<공유폴더>\<업무정리 엑셀 파일>.xlsx",
+  "baseDir": "\\<NAS-IP>\<공유폴더>\<고객서비스 폴더>",
+  "scanDirs": [
+    "업부정리 엑셀에 인용한 자료",
+    "자료방"
+  ],
+  "allowedRoots": [],
+  "port": 7331,
+  "host": "0.0.0.0",
+  "extraExcels": [],
+  "autoRefreshSec": 60
+}

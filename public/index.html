@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RF 기술이슈 관리 시스템</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">RF</span>
+    <div>
+      <h1>기술이슈 관리 시스템</h1>
+      <p id="stat-line">불러오는 중…</p>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="search">통합검색</button>
+    <button class="tab" data-tab="issues">이슈 관리</button>
+    <button class="tab" data-tab="map">지식맵</button>
+    <button class="tab" data-tab="settings">설정</button>
+  </nav>
+</header>
+
+<main>
+
+<!-- ============ 통합검색 ============ -->
+<section id="tab-search" class="panel active">
+  <div class="searchbox">
+    <input id="q" type="search" placeholder="증상, 알람코드, 모델명, 고객사, 자료 이름으로 검색…  (예: VSWR, 냉각수, RFK300FH, D-Net, Anchor pin)" autocomplete="off">
+    <button id="btn-mic" class="ghost mic" title="음성으로 검색 (Chrome·Edge)" aria-label="음성으로 검색">🎤</button>
+    <button id="btn-clear" class="ghost" title="지우기">✕</button>
+  </div>
+  <div id="syn-note" class="syn-note" hidden></div>
+
+  <div class="chips" id="kind-chips">
+    <button class="chip active" data-kind="all">전체</button>
+    <button class="chip" data-kind="issue">이슈</button>
+    <button class="chip" data-kind="kb">지식·용어</button>
+    <button class="chip" data-kind="file">자료 파일</button>
+  </div>
+
+  <div class="quick" id="quick-terms"></div>
+
+  <!-- 신입 교육 가이드: 검색어가 없을 때만 표시 -->
+  <section id="guide" class="guide"></section>
+
+  <div id="results" class="results"></div>
+</section>
+
+<!-- ============ 이슈 관리 ============ -->
+<section id="tab-issues" class="panel">
+  <div class="toolbar">
+    <button id="btn-new" class="primary">＋ 새 이슈 등록</button>
+    <input id="issue-filter" type="search" placeholder="이슈 내에서 검색…">
+    <select id="filter-status">
+      <option value="">상태 전체</option>
+      <option>진행중</option><option>완료</option><option>보류</option>
+    </select>
+    <select id="filter-customer"><option value="">고객사 전체</option></select>
+    <span class="spacer"></span>
+    <a href="/api/export" class="ghost btn">CSV 내보내기</a>
+  </div>
+  <div id="issue-list" class="issue-list"></div>
+</section>
+
+<!-- ============ 지식맵 ============ -->
+<section id="tab-map" class="panel">
+  <p class="hint">엑셀 <b>Main page</b> 를 그대로 옮겨 놓은 화면입니다. 항목을 누르면 원본 자료가 열립니다.
+    <span class="legend"><i class="dot g"></i>RF Generator <i class="dot m"></i>Matching Box <i class="dot c"></i>공통/비고</span>
+  </p>
+  <div id="map" class="map"></div>
+</section>
+
+<!-- ============ 설정 ============ -->
+<section id="tab-settings" class="panel">
+  <div class="card">
+    <h3>데이터 원본</h3>
+    <dl id="settings-info"></dl>
+    <div class="row">
+      <button id="btn-rebuild" class="primary">엑셀에서 다시 읽어오기 (재색인)</button>
+      <button id="btn-open-src" class="ghost">원본 엑셀 열기</button>
+      <button id="btn-open-base" class="ghost">자료 폴더 열기</button>
+    </div>
+    <p class="hint">공유폴더의 엑셀이나 자료가 바뀌면 <b>재색인</b>을 눌러 주세요. 네트워크 상태에 따라 1~3분 걸릴 수 있습니다.</p>
+    <pre id="rebuild-log" class="log" hidden></pre>
+  </div>
+
+  <div class="card">
+    <h3>깨진 링크 점검</h3>
+    <p class="hint">엑셀 하이퍼링크 중 현재 위치에서 파일을 찾을 수 없는 항목입니다. 정리 대상입니다.</p>
+    <div id="broken-list" class="broken"></div>
+  </div>
+
+  <div class="card">
+    <h3>백업 / 저장 위치</h3>
+    <p class="hint">등록한 이슈는 <code id="data-path">data\issues.json</code> 에 저장됩니다.
+       이 폴더를 공유폴더에 복사해 두면 팀원과 공유할 수 있습니다.</p>
+  </div>
+</section>
+
+</main>
+
+<!-- ============ 이슈 편집 모달 ============ -->
+<div id="modal" class="modal" hidden>
+  <div class="modal-box">
+    <header>
+      <h2 id="modal-title">새 이슈 등록</h2>
+      <button id="modal-close" class="ghost">✕</button>
+    </header>
+    <div class="modal-body">
+      <div class="grid">
+        <label class="full">제목 <span class="req">*</span>
+          <input id="f-title" placeholder="예) ○○전자 △△ 3라인 30kW RFG 전반사 알람 반복 발생">
+        </label>
+
+        <label>고객사
+          <input id="f-customer" list="dl-customer" placeholder="고객사명을 입력하세요">
+          <!-- 목록은 data/customers.json 을 읽어 app.js 가 채운다 (사내 정보라 저장소에 두지 않음) -->
+          <datalist id="dl-customer"></datalist>
+        </label>
+        <label>사이트 / 라인
+          <input id="f-site" placeholder="예) 파주 P9 3라인">
+        </label>
+
+        <label>장비 구분
+          <select id="f-equipment">
+            <option value="">선택</option>
+            <option>RF Generator</option><option>Matching Box</option>
+            <option>Total Controller</option><option>Phase Box</option>
+            <option>MRCS Unit</option><option>동축케이블</option><option>기타</option>
+          </select>
+        </label>
+        <label>모델
+          <input id="f-model" list="dl-model" placeholder="예) RFK300FH, CMK300M-IC2">
+          <datalist id="dl-model"></datalist>
+        </label>
+
+        <label>분류
+          <select id="f-category">
+            <option value="">선택</option>
+            <option>1.전원</option><option>2.냉각수</option><option>3.구조</option>
+            <option>5.센서(Vpp/Vdc/VSWR)</option><option>6.소프트웨어/ROM</option>
+            <option>7.기판</option><option>9.파라미터</option><option>10.알람</option>
+            <option>12.동축케이블</option><option>통신(D-Net/CAN)</option><option>기타</option>
+          </select>
+        </label>
+        <label>알람 코드
+          <input id="f-alarm" placeholder="예) E-12, WaterShortage, Over REF">
+        </label>
+
+        <label>발생일
+          <input id="f-occurred" type="date">
+        </label>
+        <label>담당 엔지니어
+          <input id="f-engineer" placeholder="이름">
+        </label>
+
+        <label>상태
+          <select id="f-status"><option>진행중</option><option>완료</option><option>보류</option></select>
+        </label>
+        <label>중요도
+          <select id="f-severity"><option>긴급</option><option>높음</option><option selected>보통</option><option>낮음</option></select>
+        </label>
+
+        <label>조치 소요시간
+          <input id="f-time" placeholder="예) 2시간, 1일">
+        </label>
+        <label>태그 (쉼표 구분)
+          <input id="f-tags" placeholder="예) 전반사, Anchor pin, 재발">
+        </label>
+
+        <label class="full">현상 (무엇이 보였나)
+          <textarea id="f-symptom" rows="3" placeholder="고객이 호소한 현상, 알람 화면, 측정값 등"></textarea>
+        </label>
+        <label class="full">원인 (왜 생겼나)
+          <textarea id="f-cause" rows="3" placeholder="점검 결과 확인된 근본 원인"></textarea>
+        </label>
+        <label class="full">조치 방법 (어떻게 해결했나) <span class="req">★ 가장 중요</span>
+          <textarea id="f-action" rows="5" placeholder="1) …&#10;2) …&#10;3) …  다음 사람이 그대로 따라 할 수 있게 순서대로"></textarea>
+        </label>
+        <label class="full">결과
+          <textarea id="f-result" rows="2" placeholder="조치 후 상태, 재발 여부"></textarea>
+        </label>
+        <label class="full">재발 방지 / 참고
+          <textarea id="f-preventive" rows="2" placeholder="같은 문제를 막기 위한 조치, 주의사항"></textarea>
+        </label>
+      </div>
+
+      <div class="refs-block">
+        <h4>관련 자료</h4>
+        <div class="row">
+          <input id="ref-search" placeholder="지식베이스에서 자료 찾아 연결…">
+          <button id="btn-pick-file" class="ghost">내 PC 파일 첨부</button>
+        </div>
+        <div id="ref-suggest" class="ref-suggest"></div>
+        <div id="ref-list" class="ref-list"></div>
+      </div>
+    </div>
+    <footer>
+      <button id="btn-delete" class="danger" hidden>삭제</button>
+      <span class="spacer"></span>
+      <button id="btn-cancel" class="ghost">취소</button>
+      <button id="btn-save" class="primary">저장</button>
+    </footer>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

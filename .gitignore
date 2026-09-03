@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------
+# data/ 는 저장소에 올리지 않습니다.
+#
+#  - kb.json      : 사내 NAS 경로 3,000여 건, 고객사명, 엑셀 셀 메모 원문 포함.
+#                   공유폴더에서 언제든 재생성되므로 백업할 필요가 없습니다.
+#                   (설정 화면 → "엑셀에서 다시 읽어오기" 또는 node tools/build-kb.js)
+#  - issues.json  : 고객사 이슈 상세 내용. 사내 자산이므로 외부 저장소 대신
+#                   공유폴더에 별도 백업하세요.
+# ---------------------------------------------------------------
+#  - synonyms.json : 손으로 만든 연관어 사전. 재생성되지 않으므로 이것만 백업합니다.
+data/*
+!data/synonyms.json
+!data/customers.example.json
+
+# 임시 / 환경 파일
+*.tmp
+node_modules/
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# 서버를 창 없이 띄웠을 때 남는 실행 로그
+server.log
+server.err.log
+
+# 손으로 만든 백업본
+*.bak
+
+# 사내 NAS 주소/경로가 들어 있으므로 저장소에 올리지 않습니다.
+# config.example.json 을 복사해 config.json 으로 만들어 쓰세요.
+config.json
