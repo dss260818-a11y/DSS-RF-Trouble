@@ -9,5 +9,12 @@
   "port": 7331,
   "host": "0.0.0.0",
   "extraExcels": [],
-  "autoRefreshSec": 60
+  "autoRefreshSec": 60,
+  "backup": {
+    "dir": "백업\\작업일지",
+    "intervalMin": 30,
+    "onExit": true,
+    "keep": 0,
+    "timeoutSec": 10
+  }
 }

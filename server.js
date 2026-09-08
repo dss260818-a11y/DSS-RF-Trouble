@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { excelSignature } = require('./tools/excel-sig');
+const { createBackup } = require('./tools/backup');
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
@@ -47,6 +48,17 @@ function saveIssues() {
   fs.renameSync(tmp, ISSUES_PATH);
   buildIndex();
 }
+
+/* ================= 작업 일지 백업 (공유폴더) ================= */
+// issues.json 은 저장소에 올리지 않는 사내 자산이라, 공유폴더에 날짜별로 남긴다.
+// 공유폴더가 끊겨 있어도 검색·등록은 그대로 되어야 하므로 tools/backup.js 는
+// 전부 비동기 + 시간제한으로 동작하고, 실패해도 예외를 밖으로 던지지 않는다.
+const BACKUP = createBackup({
+  dataDir: DATA,
+  sourcePath: ISSUES_PATH,
+  baseDir: CFG.baseDir,
+  config: CFG.backup,
+});
 
 /* ================= 검색 인덱스 ================= */
 const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -524,6 +536,7 @@ const server = http.createServer(async (req, res) => {
         extraExcels: CFG.extraExcels || [],
         sections,
         autoRefresh: AUTO,
+        backup: BACKUP.state,
         customers: [...new Set([...CUSTOMERS, ...ISSUES.map(i => i.customer).filter(Boolean)])],
       });
     }
@@ -728,6 +741,14 @@ server.listen(PORT, HOST, () => {
   } else {
     console.log('   자동갱신 : 꺼짐 (config.json 의 autoRefreshSec 를 60 등으로 바꾸면 켜집니다)');
   }
+  if (BACKUP.state.enabled) {
+    const 주기 = BACKUP.state.intervalMin > 0 ? BACKUP.state.intervalMin + '분마다' : '종료할 때만';
+    console.log('   일지백업 :', 주기 + (BACKUP.state.onExit ? ' + 종료할 때' : '') +
+                ', 공유폴더에 날짜별로 남깁니다 (기록 : data/backup.log)');
+    BACKUP.start();
+  } else {
+    console.log('   일지백업 : 꺼짐 (config.json 의 backup.dir 에 폴더를 적으면 켜집니다)');
+  }
   console.log('');
   console.log('   창을 닫으면 종료됩니다. (Ctrl+C)');
   console.log('');
@@ -735,3 +756,28 @@ server.listen(PORT, HOST, () => {
     spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
   }
 });
+
+/* ================= 종료할 때 ================= */
+// 창을 닫거나 Ctrl+C 를 누르면, 나가기 전에 작업 일지를 공유폴더에 한 번 더 남긴다.
+// 공유폴더가 죽어 있어도 프로그램이 안 닫히면 곤란하므로 최대 5초만 기다린다.
+let SHUTTING_DOWN = false;
+async function shutdown(signal) {
+  if (SHUTTING_DOWN) return;
+  SHUTTING_DOWN = true;
+  BACKUP.stop();
+  if (BACKUP.state.enabled && BACKUP.state.onExit) {
+    console.log('');
+    console.log('  [백업] 종료 전 작업 일지를 공유폴더에 남깁니다…');
+    const 시간제한 = new Promise(r => {
+      const t = setTimeout(() => r('timeout'), 5000);
+      if (t.unref) t.unref();
+    });
+    const r = await Promise.race([BACKUP.run('종료 - ' + signal), 시간제한]);
+    if (r === 'timeout') console.log('  [백업] 공유폴더가 느려 종료 백업을 건너뜁니다.');
+  }
+  console.log('  서버를 종료합니다.');
+  process.exit(0);
+}
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK', 'SIGHUP']) {
+  try { process.on(sig, () => shutdown(sig)); } catch { /* 이 OS 에 없는 신호는 무시 */ }
+}
