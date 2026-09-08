@@ -16,5 +16,17 @@
     "onExit": true,
     "keep": 0,
     "timeoutSec": 10
+  },
+  "ai": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "redact": true,
+    "maxIssues": 5,
+    "maxKb": 8,
+    "timeoutSec": 30,
+    "rateLimitPerMin": 10,
+    "monthlyTokenBudget": 3000000
   }
 }

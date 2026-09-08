@@ -26,6 +26,8 @@ const rules = [
   { name: '발주서번호',   re: /\bP\d{11}\b/ },
   { name: 'L/N',          re: /\bWT\d{4}\b/ },
   { name: 'GitHub 토큰',  re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/ },
+  { name: 'AI API 키',    re: /\bsk-[A-Za-z0-9_-]{20,}\b/ },
+  { name: 'API 키 설정',  re: /\b[A-Z][A-Z0-9_]*_(?:API_)?KEY\s*=\s*['"]?[A-Za-z0-9_-]{16,}/ },
 ];
 
 // 고객사명 — data/customers.json 의 명단과 연관어 전부

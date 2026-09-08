@@ -28,6 +28,11 @@ server.err.log
 # 손으로 만든 백업본
 *.bak
 
+# API 키가 들어 있으므로 저장소에 올리지 않습니다.
+# .env.example 을 복사해 .env 로 만들어 쓰세요.
+.env
+.env.local
+
 # 사내 NAS 주소/경로가 들어 있으므로 저장소에 올리지 않습니다.
 # config.example.json 을 복사해 config.json 으로 만들어 쓰세요.
 config.json

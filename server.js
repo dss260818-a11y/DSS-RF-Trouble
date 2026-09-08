@@ -7,6 +7,9 @@ const { excelSignature } = require('./tools/excel-sig');
 const { createBackup } = require('./tools/backup');
 const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 
+// .env 를 읽어 환경변수에 채운다(AI API 키 등). 파일이 없어도 그냥 넘어간다.
+require('./tools/env').load();
+
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
 const PUBLIC = path.join(ROOT, 'public');
@@ -68,6 +71,47 @@ const BACKUP = createBackup({
   baseDir: CFG.baseDir,
   config: CFG.backup,
 });
+
+/* ================= AI 검색 — 준비 단계 ================= */
+// 지금은 "쓸 수 있는 상태인지" 만 알려 준다. 실제 질의·응답은 다음 단계에서 붙인다.
+// 꺼져 있거나 키가 없으면 화면에서 AI 영역을 아예 감추고 기존 통합검색만 쓴다.
+// 그래야 AI 가 없거나 고장 나도 지금까지 쓰던 기능이 그대로 돈다.
+//
+// 키는 코드에도 config.json 에도 적지 않는다. .env 또는 컨테이너 환경변수로만 받는다.
+const AI = {
+  enabled: false,              // config.json 에서 켜야 동작한다
+  provider: 'openai',
+  model: 'gpt-4o-mini',
+  redact: true,                // 내보내기 전 고객사명·경로 가리기
+  maxIssues: 5,                // AI 에 넘길 이슈 최대 건수 (전체를 보내지 않는다)
+  maxKb: 8,                    // AI 에 넘길 지식 항목 최대 건수
+  timeoutSec: 30,
+  rateLimitPerMin: 10,
+  monthlyTokenBudget: 3000000,
+  ...(CFG.ai || {}),
+};
+
+function aiStatus() {
+  const hasKey = String(process.env.OPENAI_API_KEY || '').trim().length > 0;
+  const ready = AI.enabled === true && hasKey;
+  let reason = '';
+  if (!ready) {
+    if (AI.enabled !== true) reason = 'config.json 의 ai.enabled 가 켜져 있지 않습니다';
+    else reason = 'API 키가 없습니다 (.env 의 OPENAI_API_KEY)';
+  }
+  return {
+    ready,
+    enabled: AI.enabled === true,
+    hasKey,
+    provider: AI.provider,
+    model: AI.model,
+    redact: AI.redact !== false,
+    webSearch: false,          // 사내망 전용 원칙에 따라 아직 넣지 않았다
+    maxIssues: AI.maxIssues,
+    maxKb: AI.maxKb,
+    reason,
+  };
+}
 
 /* ================= 검색 인덱스 ================= */
 const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -548,6 +592,11 @@ const server = http.createServer(async (req, res) => {
         backup: BACKUP.state,
         customers: [...new Set([...CUSTOMERS, ...ISSUES.map(i => i.customer).filter(Boolean)])],
       });
+    }
+
+    // AI 검색을 쓸 수 있는 상태인지. 화면이 AI 영역을 보일지 말지 결정하는 데 쓴다.
+    if (p === '/api/ai/status') {
+      return send(res, 200, aiStatus());
     }
 
     if (p === '/api/search') {
