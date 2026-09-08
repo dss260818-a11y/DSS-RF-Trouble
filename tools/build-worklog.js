@@ -141,16 +141,24 @@ function rebuild() {
   assertClean(block);
 
   const readme = fs.readFileSync(README_PATH, 'utf8');
-  const a = readme.indexOf(MARK_START);
-  const b = readme.indexOf(MARK_END);
+
+  // README 가 쓰던 줄바꿈 방식을 그대로 따라간다.
+  // 윈도에서는 git 이 CRLF 로 파일을 내려주는데, 이 구간만 LF 로 써 버리면
+  // 내용이 똑같은데도 git 이 계속 "수정됨" 으로 표시한다.
+  const eol = readme.includes('\r\n') ? '\r\n' : '\n';
+  const body = readme.replace(/\r\n/g, '\n');   // 자르고 붙이는 일은 LF 기준으로만 한다
+
+  const a = body.indexOf(MARK_START);
+  const b = body.indexOf(MARK_END);
   if (a < 0 || b < 0 || b < a) {
     throw new Error(`README.md 에 ${MARK_START} / ${MARK_END} 표시가 없습니다.`);
   }
 
-  const next = readme.slice(0, a + MARK_START.length) + '\n' + block + readme.slice(b);
-  if (next === readme) return { changed: false, total: issues.length };
+  const next = body.slice(0, a + MARK_START.length) + '\n' + block + body.slice(b);
+  const out = eol === '\n' ? next : next.replace(/\n/g, '\r\n');
+  if (out === readme) return { changed: false, total: issues.length };
 
-  fs.writeFileSync(README_PATH, next, 'utf8');
+  fs.writeFileSync(README_PATH, out, 'utf8');
   return { changed: true, total: issues.length };
 }
 
