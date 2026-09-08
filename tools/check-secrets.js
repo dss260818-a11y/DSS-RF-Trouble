@@ -46,40 +46,49 @@ if (CUSTOMERS.length) {
   rules.push({ name: '고객사명', re: new RegExp(CUSTOMERS.map(esc).join('|')) });
 }
 
+// ---- 규칙을 다른 도구와 함께 쓴다 ----
+// tools/build-worklog.js 가 README 에 넣을 글을 이 규칙 그대로 검사한다.
+// 규칙이 한 곳에만 있어야, 나중에 규칙을 고쳤을 때 한쪽만 낡는 일이 없다.
+module.exports = { rules, customerTerms, CUSTOMERS, SKIP };
+
 // ---- 스테이징된 내용 검사 ----
-const staged = git('diff', '--cached', '--name-only', '--diff-filter=ACM')
-  .split('\n').map(s => s.trim()).filter(Boolean)
-  .filter(f => !SKIP.some(re => re.test(f)));
+function main() {
+  const staged = git('diff', '--cached', '--name-only', '--diff-filter=ACM')
+    .split('\n').map(s => s.trim()).filter(Boolean)
+    .filter(f => !SKIP.some(re => re.test(f)));
 
-const hits = [];
-for (const file of staged) {
-  let body;
-  try { body = git('show', ':' + file); } catch { continue; }
-  if (body.includes('\0')) continue;                // 바이너리
-  const lines = body.split(/\r?\n/);
-  lines.forEach((line, i) => {
-    for (const rule of rules) {
-      const m = rule.re.exec(line);
-      if (m) hits.push({ file, line: i + 1, rule: rule.name, text: m[0], src: line.trim().slice(0, 100) });
-    }
-  });
+  const hits = [];
+  for (const file of staged) {
+    let body;
+    try { body = git('show', ':' + file); } catch { continue; }
+    if (body.includes('\0')) continue;                // 바이너리
+    const lines = body.split(/\r?\n/);
+    lines.forEach((line, i) => {
+      for (const rule of rules) {
+        const m = rule.re.exec(line);
+        if (m) hits.push({ file, line: i + 1, rule: rule.name, text: m[0], src: line.trim().slice(0, 100) });
+      }
+    });
+  }
+
+  if (!hits.length) {
+    console.log('사내 정보 검사 통과 (' + staged.length + '개 파일)');
+    process.exit(0);
+  }
+
+  console.error('');
+  console.error('  커밋을 멈췄습니다 — 사내 정보로 보이는 내용이 있습니다.');
+  console.error('  이 저장소는 공개(public)입니다.');
+  console.error('');
+  for (const h of hits) {
+    console.error('  ' + h.file + ':' + h.line + '  [' + h.rule + '] ' + h.text);
+    console.error('      ' + h.src);
+  }
+  console.error('');
+  console.error('  해결: 해당 값을 예시값으로 바꾸거나, 사내 전용 파일(data/, config.json)로 옮기세요.');
+  console.error('  검사가 틀렸다면: git commit --no-verify');
+  console.error('');
+  process.exit(1);
 }
 
-if (!hits.length) {
-  console.log('사내 정보 검사 통과 (' + staged.length + '개 파일)');
-  process.exit(0);
-}
-
-console.error('');
-console.error('  커밋을 멈췄습니다 — 사내 정보로 보이는 내용이 있습니다.');
-console.error('  이 저장소는 공개(public)입니다.');
-console.error('');
-for (const h of hits) {
-  console.error('  ' + h.file + ':' + h.line + '  [' + h.rule + '] ' + h.text);
-  console.error('      ' + h.src);
-}
-console.error('');
-console.error('  해결: 해당 값을 예시값으로 바꾸거나, 사내 전용 파일(data/, config.json)로 옮기세요.');
-console.error('  검사가 틀렸다면: git commit --no-verify');
-console.error('');
-process.exit(1);
+if (require.main === module) main();

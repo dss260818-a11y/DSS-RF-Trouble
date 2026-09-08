@@ -5,6 +5,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { excelSignature } = require('./tools/excel-sig');
 const { createBackup } = require('./tools/backup');
+const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
@@ -47,6 +48,14 @@ function saveIssues() {
   }
   fs.renameSync(tmp, ISSUES_PATH);
   buildIndex();
+  refreshWorklog();
+}
+
+// README.md 의 "최근 작업 일지" 를 다시 만든다. 공개해도 되는 항목만 뽑아 넣는다.
+// 실패해도 이슈 저장을 막으면 안 되므로, 알리기만 하고 넘어간다. (백업과 같은 원칙)
+function refreshWorklog() {
+  try { rebuildWorklog(); }
+  catch (e) { console.error('  README 작업 일지 갱신 실패 : ' + e.message); }
 }
 
 /* ================= 작업 일지 백업 (공유폴더) ================= */
