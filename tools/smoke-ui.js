@@ -125,6 +125,8 @@ const step = async (label, fn) => {
   console.log('\n[5] 이슈 목록');
   await step('이슈 목록', () => ctx.renderIssues());
   check('이슈 목록', '#issue-list');
+  await step('이슈 인쇄', () => { store['#is-report'] = ctx.issueReportHtml(); });
+  check('이슈 인쇄 표', '#is-report', ['이슈 현황', '진행중 이슈', '완료 이슈']);
 
   console.log('\n[6] 설정 화면');
   await step('설정', () => ctx.renderSettings());
@@ -133,7 +135,7 @@ const step = async (label, fn) => {
 
   console.log('\n[7] 이슈 입력 폼 열기');
   await step('폼', () => ctx.openForm(null));
-  check('폼 초기화', '.modal-body', ['f-title', 'f-action']);
+  check('폼 초기화', '.modal-body', ['f-title', 'f-cause', 'f-due-mode']);
 
   console.log('\n[8] 이슈 상세 화면');
   await step('상세', () => {

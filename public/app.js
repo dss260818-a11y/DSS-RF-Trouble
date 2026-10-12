@@ -241,7 +241,8 @@ function renderResult(r) {
       <div class="main">
         <div class="t"><span class="badge issue">이슈</span>${esc(it.title)}</div>
         <div class="s">${esc([it.id, it.customer, it.site, it.equipment, it.model, it.alarmCode].filter(Boolean).join(' · '))}</div>
-        ${it.action ? `<div class="b"><b>조치:</b> ${esc(it.action)}</div>` : ''}
+        ${it.action ? `<div class="b"><b>조치:</b> ${esc(it.action)}</div>`
+          : it.cause ? `<div class="b"><b>원인·결과:</b> ${esc(it.cause)}</div>` : ''}
       </div>
       <div class="acts"><button data-act="issue" data-id="${esc(it.id)}">상세</button></div>
     </div>`;
@@ -500,7 +501,7 @@ async function loadIssues() {
 ['#issue-filter', '#filter-status', '#filter-customer'].forEach(s =>
   $(s).addEventListener('input', renderIssues));
 
-function renderIssues() {
+function filteredIssues() {
   const q = $('#issue-filter').value.trim().toLowerCase();
   const st = $('#filter-status').value;
   const cu = $('#filter-customer').value;
@@ -508,6 +509,11 @@ function renderIssues() {
   if (st) rows = rows.filter(i => i.status === st);
   if (cu) rows = rows.filter(i => i.customer === cu);
   if (q) rows = rows.filter(i => JSON.stringify(i).toLowerCase().includes(q));
+  return rows;
+}
+
+function renderIssues() {
+  const rows = filteredIssues();
 
   const box = $('#issue-list');
   if (!rows.length) {
@@ -535,6 +541,49 @@ function renderIssues() {
     </div>`).join('');
   $$('#issue-list .issue').forEach(d => d.onclick = () => showIssue(d.dataset.id));
 }
+
+// 인쇄: 지금 목록 조건 그대로, 진행중 / 보류 / 완료 로 나눠 표로 뽑는다. 출장 일정과 같은 print-weekly 방식.
+function issueReportHtml() {
+  const rows = filteredIssues();
+  const td = (v, cls) => `<td class="wk-td${cls ? ' ' + cls : ''}">${v}</td>`;
+  const txt = v => esc(v || '').replace(/\n/g, '<br>');
+  const base = [
+    ['No', (i, n) => n + 1], ['이슈번호', i => esc(i.id), 'tr-code'],
+    ['고객사 / 사이트', i => esc([i.customer, i.site].filter(Boolean).join(' / ') || '-')],
+    ['제품 / 모델', i => esc([i.equipment, i.model].filter(Boolean).join(' ') || '-')],
+    ['제목', i => esc(i.title)], ['중요도', i => esc(i.severity || '보통')],
+    ['발생일', i => esc(i.occurredAt || '-')],
+  ];
+  const SECS = [
+    { st: '진행중', icon: '🔧', cols: [...base,
+      ['목표일', i => i.dueDate ? (i.dueDate < ymd(new Date()) ? `<span class="wk-red">${esc(i.dueDate)}</span>` : esc(i.dueDate)) : '-'],
+      ['이슈 내용', i => txt(i.symptom)], ['다음주 계획', i => txt(i.nextPlan)]] },
+    { st: '보류', icon: '⏸', cols: [...base, ['이슈 내용', i => txt(i.symptom)], ['다음주 계획', i => txt(i.nextPlan)]] },
+    { st: '완료', icon: '✅', cols: [...base,
+      ['완료일', i => esc(i.closedAt ? ymd(i.closedAt) : '-')],
+      ['이슈 내용', i => txt(i.symptom)], ['원인 및 결과', i => txt(causeResultOf(i))]] },
+  ];
+  const sorted = st => rows.filter(i => (i.status || '진행중') === st).sort((a, b) =>
+    (SEV_ORDER[a.severity || '보통'] - SEV_ORDER[b.severity || '보통']) || (a.occurredAt || '').localeCompare(b.occurredAt || ''));
+  const shown = SECS.filter(s => !$('#filter-status').value || s.st === $('#filter-status').value);
+  const cond = [$('#filter-customer').value, $('#issue-filter').value.trim() && `검색 "${$('#issue-filter').value.trim()}"`].filter(Boolean);
+  return `<div class="wk-h">■ 이슈 현황 (${shown.map(s => s.st).join(' · ')})</div>
+    <div class="wk-sub">작성일 ${ymd(new Date())}${cond.length ? ' · 조건: ' + esc(cond.join(', ')) : ''}</div>
+    <div class="wk-sum">${shown.map(s => `${s.st} ${sorted(s.st).length}건`).join(' · ')}</div>
+    ${shown.map(s => {
+      const list = sorted(s.st);
+      const body = list.length ? list.map((i, n) => `<tr>${s.cols.map(([, fn, cls]) => td(fn(i, n), cls)).join('')}</tr>`).join('')
+        : `<tr><td class="wk-td wk-dim" colspan="${s.cols.length}">해당 이슈 없음</td></tr>`;
+      return `<div class="wk-sec">${s.icon} ${s.st} 이슈 <span class="wk-dim">(${list.length}건)</span></div>
+        <table class="wk-table"><thead><tr>${s.cols.map(c => `<th class="wk-th">${c[0]}</th>`).join('')}</tr></thead>
+        <tbody>${body}</tbody></table>`;
+    }).join('')}`;
+}
+$('#is-print').onclick = () => {
+  $('#is-report').innerHTML = issueReportHtml();
+  document.body.classList.add('print-weekly');
+  window.print();
+};
 
 /* ================= 이슈 상세 ================= */
 function showIssue(id) {
@@ -573,24 +622,23 @@ function detailHtml(i) {
       <dt>상태</dt><dd><span class="st ${esc(i.status || '진행중')}">${esc(i.status || '진행중')}</span>
         &nbsp;중요도 ${esc(i.severity || '보통')}</dd>
       <dt>고객사</dt><dd>${esc([i.customer, i.site].filter(Boolean).join(' / ')) || '-'}</dd>
-      <dt>장비 / 모델</dt><dd>${esc([i.equipment, i.model].filter(Boolean).join(' ')) || '-'}</dd>
+      <dt>제품 / 모델</dt><dd>${esc([i.equipment, i.model].filter(Boolean).join(' ')) || '-'}</dd>
       <dt>분류 / 알람</dt><dd>${esc([i.category, i.alarmCode].filter(Boolean).join(' · ')) || '-'}</dd>
-      <dt>발생일</dt><dd>${esc(i.occurredAt || '-')}${i.timeToFix ? ' · 소요 ' + esc(i.timeToFix) : ''}</dd>
+      <dt>발생일</dt><dd>${esc(i.occurredAt || '-')}</dd>
       ${i.engineer ? `<dt>담당</dt><dd>${esc(i.engineer)}</dd>` : ''}
       ${i.dueDate ? `<dt>목표 완료일</dt><dd>${esc(i.dueDate)}</dd>` : ''}
       ${i.status === '완료' && i.closedAt ? `<dt>완료일</dt><dd>${esc(ymd(i.closedAt))}</dd>` : ''}
-      ${(i.tags || []).length ? `<dt>태그</dt><dd>${i.tags.map(t => `<code>${esc(t)}</code>`).join(' ')}</dd>` : ''}
       <dt>등록 / 수정</dt><dd>${esc((i.createdAt || '').slice(0, 10))} / ${esc((i.updatedAt || '').slice(0, 10))}</dd>
     </dl>
-    ${sec('현상', i.symptom)}
-    ${sec('원인', i.cause)}
-    ${sec('조치 방법', i.action)}
-    ${sec('결과', i.result)}
-    ${sec('재발 방지 / 참고', i.preventive)}
+    ${sec('다음주 계획', i.nextPlan)}
+    ${sec('이슈 내용', i.symptom)}
     ${(i.progress || []).length ? `<h4>진행 이력</h4><div class="prog-view">${
       i.progress.map(p => `<div class="pv-row"><b>${esc(p.date)} (${dowOf(p.date)})</b><div><div class="pv-text">${esc(p.text)}</div>${
         (p.files || []).map(f => `<button class="pv-file" data-u="${esc(f.upload)}">📎 ${esc(f.label)}</button>`).join('')}</div></div>`).join('')}</div>` : ''}
-    ${sec('다음주 계획', i.nextPlan)}
+    ${sec('원인 및 결과', i.cause)}
+    ${sec('조치 방법', i.action)}
+    ${sec('결과', i.result)}
+    ${sec('재발 방지 / 참고', i.preventive)}
     ${refs.length ? `<h4>관련 자료</h4><div class="ref-list">${refs.map(r => refRow(r)).join('')}</div>` : ''}
   </div>`;
 }
@@ -603,6 +651,31 @@ $('#btn-new').onclick = () => openForm(null);
 $('#modal-close').onclick = closeModal;
 $('#btn-cancel').onclick = closeModal;
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+// 예전 이슈는 원인 / 조치 방법 / 결과 가 따로 있다. 폼에는 "원인 및 결과" 하나뿐이라 합쳐서 보여주고,
+// 저장하면 합친 글이 cause 에 들어가고 action·result 는 비운다.
+function causeResultOf(it) {
+  if (!it.action && !it.result) return it.cause || '';
+  return [['원인', it.cause], ['조치', it.action], ['결과', it.result]]
+    .filter(([, t]) => t).map(([h, t]) => `[${h}]\n${t}`).join('\n\n');
+}
+
+// 목표 완료일: 발생일 + 3일 / + 1주일 / 기타(직접 선택)
+function initDue(due) {
+  const mode = $('#f-due-mode'), date = $('#f-due'), occ = $('#f-occurred');
+  const sync = () => {
+    const n = Number(mode.value);
+    if (n && occ.value) date.value = addDays(occ.value, n);
+    if (!mode.value) date.value = '';
+    date.hidden = !mode.value;
+    date.readOnly = mode.value !== 'etc';
+  };
+  mode.value = !due ? '' : occ.value && due === addDays(occ.value, 3) ? '3'
+    : occ.value && due === addDays(occ.value, 7) ? '7' : 'etc';
+  mode.onchange = sync;
+  occ.addEventListener('change', sync);
+  sync();
+}
 
 function closeModal() { $('#modal').hidden = true; EDITING = null; }
 
@@ -619,13 +692,12 @@ function openForm(it) {
   v('#f-alarm', it && it.alarmCode);
   v('#f-status', (it && it.status) || '진행중');
   v('#f-severity', (it && it.severity) || '보통');
-  v('#f-time', it && it.timeToFix);
   v('#f-occurred', (it && it.occurredAt) || ymd(new Date()));
-  v('#f-tags', it && (it.tags || []).join(', '));
-  v('#f-symptom', it && it.symptom);   v('#f-cause', it && it.cause);
-  v('#f-action', it && it.action);     v('#f-result', it && it.result);
+  v('#f-symptom', it && it.symptom);
+  v('#f-cause', it && causeResultOf(it));
   v('#f-preventive', it && it.preventive);
   v('#f-due', it && it.dueDate);       v('#f-nextplan', it && it.nextPlan);
+  initDue(it && it.dueDate);
 
   curRefs = it ? [...(it.refs || []), ...(it.attachments || [])] : [];
   curProg = it ? (it.progress || []).map(p => ({ ...p, files: [...(p.files || [])] })) : [];
@@ -783,10 +855,10 @@ async function saveIssue() {
     title: g('#f-title'), customer: g('#f-customer'), site: g('#f-site'),
     equipment: g('#f-equipment'), model: g('#f-model'), category: g('#f-category'),
     alarmCode: g('#f-alarm'), status: g('#f-status'),   // 담당 엔지니어는 입력받지 않는다 (예전 값은 그대로 둠)
-    severity: g('#f-severity'), timeToFix: g('#f-time'), occurredAt: g('#f-occurred'),
-    tags: g('#f-tags').split(',').map(s => s.trim()).filter(Boolean),
-    symptom: g('#f-symptom'), cause: g('#f-cause'), action: g('#f-action'),
-    result: g('#f-result'), preventive: g('#f-preventive'),
+    severity: g('#f-severity'), occurredAt: g('#f-occurred'),
+    // 소요시간·태그는 입력받지 않는다 (예전 값은 그대로 둠). 조치 방법·결과는 "원인 및 결과" 에 합쳐 저장
+    symptom: g('#f-symptom'), cause: g('#f-cause'), action: '', result: '',
+    preventive: g('#f-preventive'),
     refs: curRefs, attachments: [],
     dueDate: g('#f-due'), nextPlan: g('#f-nextplan'), progress,
     baseUpdatedAt: EDITING ? EDITING.updatedAt : undefined,   // 그 사이 남이 고쳤는지 서버가 확인

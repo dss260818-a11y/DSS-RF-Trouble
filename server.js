@@ -8,6 +8,7 @@ const { createBackup } = require('./tools/backup');
 const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 const { local, mapped } = require('./tools/paths');
 const { createAuth } = require('./tools/auth');
+const { buildIssueXlsx } = require('./tools/issue-xlsx');
 
 // .env 를 읽어 환경변수에 채운다(AI API 키 등). 파일이 없어도 그냥 넘어간다.
 require('./tools/env').load();
@@ -990,6 +991,18 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/rebuild' && req.method === 'POST') {
       return rebuild().then(r => { reloadKB(); send(res, 200, r); });
+    }
+
+    // 이슈 관리대장 엑셀 (KYOSAN RF SYSTEM 현장 ISSUE 양식, 발생 연도별 시트)
+    if (p === '/api/export.xlsx') {
+      const x = buildIssueXlsx(ISSUES);
+      const name = `KYOSAN_RF_SYSTEM_현장_ISSUE_관리대장_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="rf-issues.xlsx"; filename*=UTF-8''${encodeURIComponent(name)}`,
+        'Content-Length': x.length,
+      });
+      return res.end(x);
     }
 
     if (p === '/api/export') {

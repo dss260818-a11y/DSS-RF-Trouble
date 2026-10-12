@@ -554,4 +554,14 @@ button.danger:hover{background:var(--bad);color:#fff}
 .pv-text{white-space:pre-wrap}
 .pv-file{background:var(--bg2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;margin:4px 5px 0 0;font-size:12px;cursor:pointer;color:var(--fg)}
 .pv-file:hover{border-color:var(--acc)}
-@media (max-width:720px){ .prog-row{flex-wrap:wrap} .prog-row .pg-date{flex:1 1 100%} .pv-row{grid-template-columns:1fr} }
+@media (max-width:720px){ .prog-row{flex-wrap:wrap} .prog-row .pg-date{flex:1 1 100%} .pv-row{grid-template-columns:1fr} }.due-row{display:flex;gap:6px}
+.due-row>*{flex:1;min-width:0}
+.due-row input[readonly]{color:var(--fg2)}
+
+/* 이슈 관리 인쇄: 화면에는 숨기고 인쇄할 때만 표로 */
+.is-report{display:none}
+@media print{
+  body.print-weekly #tab-issues .toolbar, body.print-weekly #issue-list{display:none!important}
+  body.print-weekly .is-report{display:block}
+  body.print-weekly .is-report .wk-table{font-size:10.5px}
+}

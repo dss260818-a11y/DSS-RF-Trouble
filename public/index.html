@@ -70,9 +70,12 @@
     </select>
     <select id="filter-customer"><option value="">고객사 전체</option></select>
     <span class="spacer"></span>
-    <a href="/api/export" class="ghost btn">CSV 내보내기</a>
+    <a href="/api/export.xlsx" class="ghost btn">📥 엑셀 내보내기</a>
+    <button id="is-print" class="ghost">🖨 인쇄 / PDF</button>
   </div>
   <div id="issue-list" class="issue-list"></div>
+  <!-- 인쇄할 때만 보인다. 위의 상태·고객사·검색 조건을 그대로 따른다 -->
+  <div id="is-report" class="wk-report is-report"></div>
 </section>
 
 <!-- ============ 주간보고 ============ -->
@@ -171,12 +174,11 @@
           <input id="f-site" placeholder="예) 파주 P9 3라인">
         </label>
 
-        <label>장비 구분
+        <label>제품 구분
           <select id="f-equipment">
             <option value="">선택</option>
             <option>RF Generator</option><option>Matching Box</option>
-            <option>Total Controller</option><option>Phase Box</option>
-            <option>MRCS Unit</option><option>동축케이블</option><option>기타</option>
+            <option>Total Controller</option><option>기타</option>
           </select>
         </label>
         <label>모델
@@ -193,53 +195,48 @@
             <option>12.동축케이블</option><option>통신(D-Net/CAN)</option><option>기타</option>
           </select>
         </label>
-        <label>알람 코드
-          <input id="f-alarm" placeholder="예) E-12, WaterShortage, Over REF">
+        <label>알람명
+          <input id="f-alarm" placeholder="예) WaterShortage, Over REF">
         </label>
 
         <label>발생일
           <input id="f-occurred" type="date">
         </label>
         <label>목표 완료일
-          <input id="f-due" type="date">
+          <!-- 발생일 +3일 / +1주일 은 발생일이 바뀌면 따라 바뀐다. 기타는 날짜를 직접 고른다 -->
+          <span class="due-row">
+            <select id="f-due-mode">
+              <option value="">선택</option>
+              <option value="3">발생일 + 3일</option>
+              <option value="7">발생일 + 1주일</option>
+              <option value="etc">기타 (직접 선택)</option>
+            </select>
+            <input id="f-due" type="date">
+          </span>
         </label>
 
         <label>상태
           <select id="f-status"><option>진행중</option><option>완료</option><option>보류</option></select>
         </label>
-        <label>중요도
+        <label>중요도 (이슈 중요성)
           <select id="f-severity"><option>긴급</option><option>높음</option><option selected>보통</option><option>낮음</option></select>
         </label>
         <label class="hint-cell full">완료일은 상태를 <b>완료</b>로 바꾸면 자동으로 기록됩니다.</label>
 
+        <label class="full">다음주 계획
+          <textarea id="f-nextplan" rows="2" placeholder="예) 고객사 장비에 장착 후 72시간 모니터링"></textarea>
+        </label>
+        <label class="full">이슈 내용
+          <textarea id="f-symptom" rows="4" placeholder="고객이 호소한 현상, 알람 화면, 측정값 등"></textarea>
+        </label>
         <div class="full progress-block">
           <h4>진행 이력 <small>날짜별로 여러 줄 남길 수 있습니다 · 주간보고의 "이번주 진행" 에 나옵니다</small></h4>
           <div id="prog-list" class="prog-list"></div>
           <button id="prog-add" type="button" class="ghost prog-add">＋ 진행 이력 추가</button>
           <input id="prog-file" type="file" multiple hidden>
         </div>
-        <label class="full">다음주 계획
-          <textarea id="f-nextplan" rows="2" placeholder="예) 고객사 장비에 장착 후 72시간 모니터링"></textarea>
-        </label>
-
-        <label>조치 소요시간
-          <input id="f-time" placeholder="예) 2시간, 1일">
-        </label>
-        <label>태그 (쉼표 구분)
-          <input id="f-tags" placeholder="예) 전반사, Anchor pin, 재발">
-        </label>
-
-        <label class="full">현상 (무엇이 보였나)
-          <textarea id="f-symptom" rows="3" placeholder="고객이 호소한 현상, 알람 화면, 측정값 등"></textarea>
-        </label>
-        <label class="full">원인 (왜 생겼나)
-          <textarea id="f-cause" rows="3" placeholder="점검 결과 확인된 근본 원인"></textarea>
-        </label>
-        <label class="full">조치 방법 (어떻게 해결했나) <span class="req">★ 가장 중요</span>
-          <textarea id="f-action" rows="5" placeholder="1) …&#10;2) …&#10;3) …  다음 사람이 그대로 따라 할 수 있게 순서대로"></textarea>
-        </label>
-        <label class="full">결과
-          <textarea id="f-result" rows="2" placeholder="조치 후 상태, 재발 여부"></textarea>
+        <label class="full">원인 및 결과
+          <textarea id="f-cause" rows="4" placeholder="점검 결과 확인된 원인과 조치 후 상태, 재발 여부"></textarea>
         </label>
         <label class="full">재발 방지 / 참고
           <textarea id="f-preventive" rows="2" placeholder="같은 문제를 막기 위한 조치, 주의사항"></textarea>
