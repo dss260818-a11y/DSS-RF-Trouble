@@ -1,0 +1,19 @@
+# 이미지에는 코드(server.js, tools/, public/)만 들어간다.
+# 데이터·설정·비밀값은 실행할 때 마운트하거나 환경변수로 넣는다.
+.git
+.githooks
+data
+.docker-data
+backup
+.env
+.env.*
+docker.env
+config.json
+config.docker.json
+*.bak
+*.log
+*.tmp
+*.md
+*.txt
+*.bat
+node_modules

@@ -6,9 +6,14 @@ const { spawn } = require('child_process');
 const { excelSignature } = require('./tools/excel-sig');
 const { createBackup } = require('./tools/backup');
 const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
+const { local, mapped } = require('./tools/paths');
+const { createAuth } = require('./tools/auth');
 
 // .env 를 읽어 환경변수에 채운다(AI API 키 등). 파일이 없어도 그냥 넘어간다.
 require('./tools/env').load();
+
+const { selectContext } = require('./tools/ai-context');
+const { ask: askAI } = require('./tools/ai');
 
 const ROOT = __dirname;
 const DATA = path.join(ROOT, 'data');
@@ -20,10 +25,28 @@ const readJson = (p, dflt) => {
 };
 
 let CFG = readJson(CFG_PATH, {});
-const PORT = CFG.port || 7331;
-const HOST = CFG.host || '127.0.0.1';
+const PORT = Number(process.env.PORT) || CFG.port || 7331;
+const WANT_HOST = process.env.HOST || CFG.host || '127.0.0.1';
 
 fs.mkdirSync(DATA, { recursive: true });
+
+/* ================= 접속 범위 · 로그인 ================= */
+// 다른 PC 에서 들어오게(0.0.0.0) 하려면 팀 비밀번호가 있어야 한다. 비밀번호 없이
+// 0.0.0.0 을 적어 두면 사내망 누구나 고치고 지울 수 있으므로 이 PC 로만 묶는다.
+const AUTH = createAuth({ password: process.env.TEAM_PASSWORD, dataDir: DATA });
+const LOOPBACK = h => h === '127.0.0.1' || h === 'localhost' || h === '::1';
+const HOST = (!LOOPBACK(WANT_HOST) && !AUTH.enabled) ? '127.0.0.1' : WANT_HOST;
+const HOST_DOWNGRADED = HOST !== WANT_HOST;
+
+// "열기" 를 서버 PC 화면에 띄우는 방식은 윈도우에서, 이 PC 혼자 쓸 때만 맞다.
+// 그 밖(도커, 여러 명 접속)에서는 브라우저로 내려받기 + 경로 복사로 바꾼다.
+const DESKTOP = process.platform === 'win32' && LOOPBACK(HOST);
+
+const UPLOAD_DIR = path.join(DATA, 'uploads');
+const UPLOAD_MAX = (Number(CFG.uploadMaxMB) || 100) * 1024 * 1024;
+
+// README 작업 일지는 코드 폴더를 고치는 기능이라 도커에서는 끈다 (WORKLOG=off)
+const WORKLOG_ON = process.env.WORKLOG !== 'off';
 
 /* ================= 데이터 로딩 ================= */
 const KB_PATH = path.join(DATA, 'kb.json');
@@ -51,7 +74,39 @@ function saveIssues() {
   }
   fs.renameSync(tmp, ISSUES_PATH);
   buildIndex();
-  refreshWorklog();
+  if (WORKLOG_ON) refreshWorklog();
+}
+
+/* ================= 출장 일정 (납품) ================= */
+// data/trips.json : 한 줄 = 제품 한 대(또는 케이블 한 품목)의 납품 일정.
+//   RF·MB : 제품명 / L/N / S/N,   CABLE : 품명·규격 / 길이 / 수량
+//   OVERSEAS(기타 출장, 처음엔 해외 출장이라 이름은 그대로) : 제품 칸 없이 출발일(date)~복귀일(endDate) / 장소 / 목적
+// 날짜·거래처·납품자는 줄마다 둔다. 요일은 날짜에서 화면이 계산한다.
+const TRIPS_PATH = path.join(DATA, 'trips.json');
+let TRIPS = readJson(TRIPS_PATH, []);
+const TRIP_TYPES = ['RF', 'MB', 'CABLE', 'OVERSEAS'];
+const TRIP_FIELDS = ['type', 'date', 'customer', 'site', 'product', 'lot', 'serial',
+  'spec', 'length', 'qty', 'deliverer', 'memo', 'endDate', 'place', 'purpose'];
+
+function pickTrip(src) {
+  const o = {};
+  for (const f of TRIP_FIELDS) if (src[f] !== undefined) o[f] = String(src[f] == null ? '' : src[f]).trim().slice(0, 300);
+  return o;
+}
+function tripError(t) {
+  if (!TRIP_TYPES.includes(t.type)) return '구분(RF / MB / CABLE / 기타 출장)이 잘못되었습니다.';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t.date || '')) return '날짜를 입력해 주세요.';
+  if (!t.customer) return '거래처를 입력해 주세요.';
+  if (t.endDate && (!/^\d{4}-\d{2}-\d{2}$/.test(t.endDate) || t.endDate < t.date)) return '복귀일이 출발일보다 앞설 수 없습니다.';
+  return '';
+}
+function saveTrips() {
+  const tmp = TRIPS_PATH + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(TRIPS, null, 1), 'utf8');
+  if (fs.existsSync(TRIPS_PATH)) {
+    try { fs.copyFileSync(TRIPS_PATH, path.join(DATA, 'trips.backup.json')); } catch {}
+  }
+  fs.renameSync(tmp, TRIPS_PATH);
 }
 
 // README.md 의 "최근 작업 일지" 를 다시 만든다. 공개해도 되는 항목만 뽑아 넣는다.
@@ -68,7 +123,7 @@ function refreshWorklog() {
 const BACKUP = createBackup({
   dataDir: DATA,
   sourcePath: ISSUES_PATH,
-  baseDir: CFG.baseDir,
+  baseDir: local(CFG.baseDir),
   config: CFG.backup,
 });
 
@@ -85,6 +140,7 @@ const AI = {
   redact: true,                // 내보내기 전 고객사명·경로 가리기
   maxIssues: 5,                // AI 에 넘길 이슈 최대 건수 (전체를 보내지 않는다)
   maxKb: 8,                    // AI 에 넘길 지식 항목 최대 건수
+  maxFiles: 5,                 // 자료 파일은 "이름" 만, 이 개수까지 (경로는 안 넘긴다)
   timeoutSec: 30,
   rateLimitPerMin: 10,
   monthlyTokenBudget: 3000000,
@@ -111,6 +167,16 @@ function aiStatus() {
     maxKb: AI.maxKb,
     reason,
   };
+}
+
+// 분당 몇 번까지만 받는다. 실수로 연타하거나 화면이 되풀이 호출해도 요금이 튀지 않게.
+const ASK_LOG = [];
+function askAllowed() {
+  const now = Date.now();
+  while (ASK_LOG.length && now - ASK_LOG[0] > 60000) ASK_LOG.shift();
+  if (ASK_LOG.length >= (AI.rateLimitPerMin || 10)) return false;
+  ASK_LOG.push(now);
+  return true;
 }
 
 /* ================= 검색 인덱스 ================= */
@@ -481,36 +547,133 @@ function buildGuide() {
 }
 
 /* ================= 파일 열기 (보안 체크) ================= */
+// baseDir / allowedRoots "아래" 인가. 문자열 앞부분만 비교하면 "허용폴더\..\..\다른곳" 이나
+// "허용폴더2" 가 통과하므로, 윈도우 규칙으로 정규화한 뒤 폴더 경계까지 맞춰 본다.
+function underRoots(p) {
+  if (!p || typeof p !== 'string') return false;
+  const norm = s => path.win32.resolve(s).replace(/\\+$/, '').toLowerCase();
+  const target = norm(p);
+  return [CFG.baseDir, ...(CFG.allowedRoots || [])].filter(Boolean).some(r => {
+    const root = norm(r);
+    return target === root || target.startsWith(root + '\\');
+  });
+}
+
+// 이 PC 화면에서 여는 경우(DESKTOP)에 한해, 사람이 "내 PC 파일 첨부" 로 이슈에 직접
+// 연결한 경로(C:\... 등)도 열어 준다. 정확히 같은 경로일 때만.
 function isAllowed(p) {
-  if (!p) return false;
-  const lp = p.toLowerCase();
-  const roots = [CFG.baseDir, ...(CFG.allowedRoots || [])].filter(Boolean).map(x => x.toLowerCase());
-  if (roots.some(r => lp.startsWith(r))) return true;
-  // 사용자가 이슈에 직접 등록한 경로는 허용
+  if (underRoots(p)) return true;
+  if (!DESKTOP || !p) return false;
+  const lp = path.win32.resolve(p).toLowerCase();
   for (const it of ISSUES) {
     for (const ref of [...(it.refs || []), ...(it.attachments || [])]) {
-      if (ref.path && ref.path.toLowerCase() === lp) return true;
+      if (ref.path && path.win32.resolve(ref.path).toLowerCase() === lp) return true;
     }
   }
   return false;
 }
 
+// 윈도우에서 혼자 쓸 때: 서버 PC 화면에 기본 프로그램/탐색기로 연다.
+// cmd /c start 는 & | ^ 같은 글자를 명령으로 읽어 버리므로 쓰지 않는다.
 function openPath(p, reveal) {
+  if (!DESKTOP) return { ok: false, error: '이 서버에서는 화면에서 바로 열 수 없습니다. 내려받기나 경로 복사를 써 주세요.' };
+  p = String(p || '');
   if (/^https?:/i.test(p)) {
-    spawn('cmd', ['/c', 'start', '', p.replace(/&/g, '^&')], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+    let url;
+    try { url = new URL(p).href; } catch { return { ok: false, error: '주소 형식이 잘못되었습니다.' }; }
+    spawn('explorer.exe', [url], { detached: true, stdio: 'ignore' }).unref();
     return { ok: true };
   }
   if (!isAllowed(p)) return { ok: false, error: '허용되지 않은 경로입니다. config.json 의 allowedRoots 에 추가하세요.' };
   if (!fs.existsSync(p)) return { ok: false, error: '파일/폴더가 존재하지 않습니다: ' + p };
-
-  if (reveal) {
-    spawn('explorer.exe', ['/select,', p], { detached: true, stdio: 'ignore' }).unref();
-  } else {
-    const isDir = fs.statSync(p).isDirectory();
-    if (isDir) spawn('explorer.exe', [p], { detached: true, stdio: 'ignore' }).unref();
-    else spawn('cmd', ['/c', 'start', '""', `"${p}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
-  }
+  spawn('explorer.exe', reveal ? ['/select,', p] : [p], { detached: true, stdio: 'ignore' }).unref();
   return { ok: true };
+}
+
+/* ================= 내려받기 · 올리기 ================= */
+// 브라우저 안에서 바로 보여 줘도 안전한 것만 inline. 나머지(오피스 문서, svg, html …)는 내려받기.
+const INLINE_TYPES = {
+  '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+};
+const DL_TYPES = {
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.doc': 'application/msword', '.xls': 'application/vnd.ms-excel', '.ppt': 'application/vnd.ms-powerpoint',
+  '.zip': 'application/zip', '.txt': 'text/plain',
+};
+
+// 내려받을 실제 파일 위치. 공유폴더 자료는 허용 폴더 안 + (도커면) 마운트된 곳만,
+// 올린 첨부는 data/uploads 안만. 그 밖은 null.
+function resolveDownload(q) {
+  if (q.upload) {
+    const full = path.resolve(UPLOAD_DIR, String(q.upload));
+    return full.startsWith(UPLOAD_DIR + path.sep) ? { full, name: path.basename(full).replace(/^\d+-/, '') } : null;
+  }
+  const p = String(q.path || '');
+  if (!underRoots(p)) return null;
+  const full = local(p);
+  if (!full || (mapped() && full === p)) return null;   // 매핑에 안 걸린 경로는 컨테이너 안을 가리킬 수 있다
+  return { full, name: path.win32.basename(p) };
+}
+
+function sendFile(req, res, q) {
+  const hit = resolveDownload(q);
+  if (!hit) return send(res, 403, { error: '허용되지 않은 경로입니다.' });
+  let st;
+  try { st = fs.statSync(hit.full); } catch { return send(res, 404, { error: '파일을 찾을 수 없습니다: ' + (q.path || hit.name) }); }
+  if (st.isDirectory()) return send(res, 400, { error: '폴더는 내려받을 수 없습니다. 경로 복사를 써 주세요.', dir: true });
+  if (q.check) return send(res, 200, { ok: true, size: st.size });
+
+  const ext = path.extname(hit.name).toLowerCase();
+  const inline = INLINE_TYPES[ext] && !q.dl;
+  const type = INLINE_TYPES[ext] || DL_TYPES[ext] || 'application/octet-stream';
+  res.writeHead(200, {
+    'Content-Type': type,
+    'Content-Length': st.size,
+    'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename="file${ext}"; filename*=UTF-8''${encodeURIComponent(hit.name).replace(/['()*]/g, c => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'private, no-store',
+  });
+  if (req.method === 'HEAD') return res.end();
+  fs.createReadStream(hit.full).on('error', () => res.destroy()).pipe(res);
+}
+
+// 브라우저가 파일 내용을 그대로(octet-stream) 보낸다. 이름은 X-Filename 머리글(URL 인코딩).
+// data/uploads/YYYY-MM/<시각>-<이름> 으로 저장하고, 이슈의 refs 에 넣을 정보를 돌려준다.
+function receiveUpload(req, res) {
+  let name;
+  try { name = decodeURIComponent(String(req.headers['x-filename'] || '')); } catch { name = ''; }
+  name = path.basename(name.replace(/\\/g, '/')).replace(/[\x00-\x1f<>:"|?*]/g, '_').trim().slice(0, 150);
+  if (!name || name === '.' || name === '..') return send(res, 400, { error: '파일 이름이 없습니다.' });
+  const len = Number(req.headers['content-length'] || 0);
+  if (len > UPLOAD_MAX) return send(res, 413, { error: `파일이 너무 큽니다 (최대 ${Math.round(UPLOAD_MAX / 1048576)}MB).` });
+
+  const month = new Date().toISOString().slice(0, 7);
+  const rel = month + '/' + Date.now() + '-' + name;
+  const full = path.join(UPLOAD_DIR, month, path.basename(rel));
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  const tmp = full + '.part';
+  const out = fs.createWriteStream(tmp);
+  let size = 0, failed = false;
+  const fail = (code, msg) => {
+    if (failed) return; failed = true;
+    out.destroy(); fs.rm(tmp, { force: true }, () => {});
+    send(res, code, { error: msg });
+  };
+  req.on('data', c => {
+    size += c.length;
+    if (size > UPLOAD_MAX) { fail(413, `파일이 너무 큽니다 (최대 ${Math.round(UPLOAD_MAX / 1048576)}MB).`); req.destroy(); }
+  });
+  req.on('error', () => fail(400, '올리는 도중 연결이 끊겼습니다.'));
+  out.on('error', e => fail(500, '저장하지 못했습니다: ' + e.message));
+  out.on('finish', () => {
+    if (failed) return;
+    fs.rename(tmp, full, e => e ? fail(500, '저장하지 못했습니다: ' + e.message)
+      : send(res, 200, { ok: true, ref: { label: name, upload: rel, size } }));
+  });
+  req.pipe(out);
 }
 
 /* ================= HTTP ================= */
@@ -521,6 +684,8 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
 };
 
 const send = (res, code, obj) => {
@@ -553,21 +718,52 @@ const nextId = () => {
 
 const FIELDS = ['title', 'customer', 'site', 'equipment', 'model', 'category', 'alarmCode',
   'symptom', 'cause', 'action', 'result', 'preventive', 'status', 'severity',
-  'engineer', 'occurredAt', 'timeToFix', 'tags', 'refs', 'attachments'];
+  'engineer', 'occurredAt', 'timeToFix', 'tags', 'refs', 'attachments',
+  'progress', 'nextPlan', 'dueDate'];
 
 function pick(src) {
   const o = {};
   for (const f of FIELDS) if (src[f] !== undefined) o[f] = src[f];
   if (Array.isArray(o.tags)) o.tags = o.tags.map(t => String(t).trim()).filter(Boolean);
+  // 진행 이력: [{ date: 'YYYY-MM-DD', text }] — 주간보고의 "이번주 진행" 이 여기서 나온다.
+  // 줄마다 올린 파일(files: [{ label, upload, size }])을 붙일 수 있다. 내용이나 파일 중 하나는 있어야 남긴다.
+  if (o.progress !== undefined) {
+    const cleanFile = f => f && typeof f.upload === 'string' && f.upload && !f.upload.includes('..')
+      ? { label: String(f.label || path.basename(f.upload)).slice(0, 200), upload: f.upload.slice(0, 300), size: Number(f.size) || 0 }
+      : null;
+    o.progress = (Array.isArray(o.progress) ? o.progress : [])
+      .map(p => {
+        const e = { date: String(p && p.date || '').slice(0, 10), text: String(p && p.text || '').trim() };
+        const files = (Array.isArray(p && p.files) ? p.files : []).map(cleanFile).filter(Boolean);
+        if (files.length) e.files = files;
+        return e;
+      })
+      .filter(p => (p.text || p.files) && /^\d{4}-\d{2}-\d{2}$/.test(p.date))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
   return o;
+}
+
+// 완료일은 사람이 적지 않는다. 상태가 '완료' 로 바뀌는 순간을 서버가 남긴다.
+// 다시 진행중/보류로 돌리면 지운다. 주간보고의 "이번주 완료" 가 이 값을 쓴다.
+function stampClosed(prev, next) {
+  const was = prev && prev.status === '완료';
+  if (next.status === '완료' && !was) next.closedAt = new Date().toISOString();
+  else if (next.status !== '완료') delete next.closedAt;
+  return next;
 }
 
 function toCsv(rows) {
   const cols = ['id', 'occurredAt', 'customer', 'site', 'equipment', 'model', 'category',
     'alarmCode', 'title', 'symptom', 'cause', 'action', 'result', 'preventive',
-    'status', 'severity', 'engineer', 'timeToFix', 'tags', 'createdAt', 'updatedAt'];
+    'status', 'severity', 'engineer', 'timeToFix', 'tags', 'createdAt', 'updatedAt',
+    'dueDate', 'closedAt', 'nextPlan', 'progress'];
   const esc = v => {
-    const s = Array.isArray(v) ? v.join(';') : (v == null ? '' : String(v));
+    const s = Array.isArray(v)
+      ? v.map(x => x && typeof x === 'object'
+        ? `[${x.date}] ${x.text}` + ((x.files || []).length ? ' (첨부: ' + x.files.map(f => f.label).join(', ') + ')' : '')
+        : x).join(v[0] && typeof v[0] === 'object' ? '\n' : ';')
+      : (v == null ? '' : String(v));
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   return '﻿' + [cols.join(','), ...rows.map(r => cols.map(c => esc(r[c])).join(','))].join('\r\n');
@@ -578,7 +774,36 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname;
 
   try {
+    /* ---- 로그인 (팀 비밀번호가 설정된 경우만) ---- */
+    if (p === '/api/health') return send(res, 200, { ok: true });
+
+    if (p === '/api/login' && req.method === 'POST') {
+      if (!AUTH.enabled) return send(res, 200, { ok: true });
+      const b = await body(req);
+      const r = AUTH.login(req.socket.remoteAddress || '', String(b.password || ''));
+      if (!r.ok) return send(res, r.locked ? 429 : 401, r);
+      res.setHeader('Set-Cookie', AUTH.setCookie());
+      return send(res, 200, { ok: true });
+    }
+    if (p === '/api/logout' && req.method === 'POST') {
+      res.setHeader('Set-Cookie', AUTH.clearCookie());
+      return send(res, 200, { ok: true });
+    }
+    // 로그인 화면도 회사 로고·배경을 써야 하므로 /img/ 는 로그인 없이 연다 (사진 두 장뿐)
+    if (AUTH.enabled && p !== '/login.html' && !p.startsWith('/img/') && !AUTH.check(req)) {
+      if (p.startsWith('/api/')) return send(res, 401, { error: '로그인이 필요합니다.', code: 'AUTH' });
+      res.writeHead(302, { Location: '/login.html' });
+      return res.end();
+    }
+
     /* ---- API ---- */
+    if (p === '/api/file' && (req.method === 'GET' || req.method === 'HEAD')) {
+      return sendFile(req, res, Object.fromEntries(u.searchParams));
+    }
+    if (p === '/api/upload' && req.method === 'POST') {
+      return receiveUpload(req, res);
+    }
+
     if (p === '/api/meta') {
       const sections = [...new Set(KB.entries.map(e => e.section).filter(Boolean))];
       return send(res, 200, {
@@ -591,12 +816,65 @@ const server = http.createServer(async (req, res) => {
         autoRefresh: AUTO,
         backup: BACKUP.state,
         customers: [...new Set([...CUSTOMERS, ...ISSUES.map(i => i.customer).filter(Boolean)])],
+        // 화면이 버튼을 어떻게 보일지 정하는 데 쓴다
+        caps: {
+          open: DESKTOP ? 'desktop' : 'download',   // 서버 화면에서 열기 / 내려받기+경로 복사
+          pick: DESKTOP,                            // 윈도우 파일 선택 창
+          auth: AUTH.enabled,
+          uploadMaxMB: Math.round(UPLOAD_MAX / 1048576),
+        },
       });
     }
 
     // AI 검색을 쓸 수 있는 상태인지. 화면이 AI 영역을 보일지 말지 결정하는 데 쓴다.
     if (p === '/api/ai/status') {
       return send(res, 200, aiStatus());
+    }
+
+    // AI 에게 묻는다. 사용자가 단추를 누르거나 엔터를 쳤을 때만 불린다
+    // (검색창 입력마다 부르지 않는다 — 요금이 나가는 길이라 일부러 떼어 두었다).
+    //
+    // 어떤 경우에도 여기서 난 문제가 통합검색에 번지지 않는다. 실패는 200 과 함께
+    // ok:false 로 돌려주고, 화면은 AI 칸에만 사정을 적는다.
+    if (p === '/api/ask' && req.method === 'POST') {
+      const st = aiStatus();
+      if (!st.ready) return send(res, 200, { ok: false, code: 'AI_OFF', error: st.reason, status: st });
+      if (!askAllowed()) {
+        return send(res, 200, { ok: false, code: 'RATE',
+          error: '잠시 뒤에 다시 물어봐 주세요 (분당 ' + (AI.rateLimitPerMin || 10) + '번까지).' });
+      }
+
+      const b = await body(req);
+      const q = String(b.q || b.question || '').trim();
+      if (!q) return send(res, 400, { ok: false, code: 'EMPTY', error: '질문이 비어 있습니다.' });
+
+      // 1단계에서 고른 것만 넘긴다. issues.json / kb.json 전체가 나가는 길은 없다.
+      const ctx = await selectContext(q, (query, o) => search(query, o), {
+        maxIssues: AI.maxIssues, maxKb: AI.maxKb, maxFiles: AI.maxFiles,
+      });
+
+      const r = await askAI(q, ctx, {
+        model: AI.model, baseUrl: AI.baseUrl, timeoutSec: AI.timeoutSec,
+      });
+
+      return send(res, 200, {
+        ok: r.ok,
+        code: r.code || '',
+        error: r.error || '',
+        intent: ctx.intent,
+        terms: ctx.terms,
+        hasLocalContext: ctx.hasLocalContext,
+        // 화면에 보여 줄 자료는 사내 원문 그대로다. 이 응답은 같은 PC 의 브라우저까지만 간다.
+        local: ctx.localResults,
+        answer: r.answer || '',
+        citedIssues: r.citedIssues || [],
+        inventedIssues: r.inventedIssues || [],
+        // AI 가 지어낸 이름표. 실제 회사 이름으로 되돌리지 않고 그대로 두었다는 표시.
+        unknownMasks: r.unknownMasks || [],
+        usage: r.usage || null,
+        model: r.model || AI.model,
+        webSearch: false,
+      });
     }
 
     if (p === '/api/search') {
@@ -626,6 +904,39 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, buildGuide());
     }
 
+    /* ---- 출장 일정 ---- */
+    if (p === '/api/trips' && req.method === 'GET') {
+      const from = u.searchParams.get('from') || '', to = u.searchParams.get('to') || '9999';
+      // 기타 출장처럼 여러 날에 걸친 일정은 그 주와 하루라도 겹치면 보여 준다
+      return send(res, 200, { trips: TRIPS.filter(t => t.date <= to && (t.endDate || t.date) >= from) });
+    }
+    if (p === '/api/trips' && req.method === 'POST') {
+      const t = pickTrip(await body(req));
+      const err = tripError(t);
+      if (err) return send(res, 400, { error: err });
+      const now = new Date().toISOString();
+      const it = { id: 'T' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), ...t, createdAt: now, updatedAt: now };
+      TRIPS.push(it);
+      saveTrips();
+      return send(res, 200, { trip: it });
+    }
+    if (p.startsWith('/api/trips/') && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const id = decodeURIComponent(p.slice('/api/trips/'.length));
+      const i = TRIPS.findIndex(x => x.id === id);
+      if (i < 0) return send(res, 404, { error: '일정을 찾을 수 없습니다.' });
+      if (req.method === 'DELETE') {
+        const [removed] = TRIPS.splice(i, 1);
+        saveTrips();
+        return send(res, 200, { removed });
+      }
+      const next = { ...TRIPS[i], ...pickTrip(await body(req)), updatedAt: new Date().toISOString() };
+      const err = tripError(next);
+      if (err) return send(res, 400, { error: err });
+      TRIPS[i] = next;
+      saveTrips();
+      return send(res, 200, { trip: next });
+    }
+
     if (p === '/api/issues' && req.method === 'GET') {
       return send(res, 200, { issues: ISSUES });
     }
@@ -634,7 +945,8 @@ const server = http.createServer(async (req, res) => {
       const b = await body(req);
       if (!b.title || !String(b.title).trim()) return send(res, 400, { error: '제목은 필수입니다.' });
       const now = new Date().toISOString();
-      const it = { id: nextId(), createdAt: now, updatedAt: now, status: '진행중', severity: '보통', ...pick(b) };
+      const it = stampClosed(null,
+        { id: nextId(), createdAt: now, updatedAt: now, status: '진행중', severity: '보통', ...pick(b) });
       ISSUES.unshift(it);
       saveIssues();
       return send(res, 200, { issue: it });
@@ -645,7 +957,12 @@ const server = http.createServer(async (req, res) => {
       const i = ISSUES.findIndex(x => x.id === id);
       if (i < 0) return send(res, 404, { error: '이슈를 찾을 수 없습니다.' });
       const b = await body(req);
-      ISSUES[i] = { ...ISSUES[i], ...pick(b), updatedAt: new Date().toISOString() };
+      // 여럿이 같이 쓰므로, 화면을 연 뒤에 다른 사람이 먼저 저장했으면 덮어쓰지 않는다
+      if (b.baseUpdatedAt && b.baseUpdatedAt !== ISSUES[i].updatedAt) {
+        return send(res, 409, { code: 'CONFLICT',
+          error: '그 사이에 다른 사람이 이 이슈를 먼저 고쳤습니다. 내용을 따로 복사해 두고, 창을 닫았다가 다시 열어 최신 내용에 반영해 주세요.' });
+      }
+      ISSUES[i] = stampClosed(ISSUES[i], { ...ISSUES[i], ...pick(b), updatedAt: new Date().toISOString() });
       saveIssues();
       return send(res, 200, { issue: ISSUES[i] });
     }
@@ -665,7 +982,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/pick' && req.method === 'POST') {
-      // 윈도우 파일 선택 대화상자
+      // 윈도우 파일 선택 대화상자 — 서버 PC 화면에 뜨므로 혼자 쓸 때만
+      if (!DESKTOP) return send(res, 400, { ok: false, error: '이 서버에서는 파일 올리기를 써 주세요.' });
       const b = await body(req);
       return pickFile(!!b.folder).then(r => send(res, 200, r));
     }
@@ -788,7 +1106,14 @@ server.listen(PORT, HOST, () => {
   console.log('  │  RF 기술이슈 관리 시스템이 시작되었습니다     │');
   console.log('  └──────────────────────────────────────────────┘');
   console.log('');
-  console.log('   주소 :', url);
+  console.log('   주소 :', url + (LOOPBACK(HOST) ? '  (이 PC 에서만)' : `  (사내망 접속 허용 · ${HOST})`));
+  console.log('   로그인 :', AUTH.enabled ? '팀 비밀번호 (TEAM_PASSWORD)' : '없음');
+  if (HOST_DOWNGRADED) {
+    console.log(`   ※ 설정은 ${WANT_HOST} 이지만 TEAM_PASSWORD 가 없어 이 PC(127.0.0.1)로만 엽니다.`);
+    console.log('     다른 PC 에서 쓰려면 .env 에 TEAM_PASSWORD=... 를 넣고 다시 켜 주세요.');
+  }
+  console.log('   자료 열기 :', DESKTOP ? '이 PC 화면에서 바로 열기' : '브라우저로 내려받기 + 경로 복사' +
+              (mapped() ? ' (공유폴더 경로 매핑 사용)' : ''));
   console.log('   지식 :', (KB.stats.entries || 0) + '건 / 파일색인 ' + (KB.stats.files || 0) + '건 / 이슈 ' + ISSUES.length + '건');
   console.log('   연관어 :', SYN_GROUPS.length + '묶음 (data/synonyms.json)');
   console.log('   고객사 :', CUSTOMERS.length + '곳 (data/customers.json)');
@@ -810,7 +1135,7 @@ server.listen(PORT, HOST, () => {
   console.log('');
   console.log('   창을 닫으면 종료됩니다. (Ctrl+C)');
   console.log('');
-  if (process.argv.includes('--open')) {
+  if (process.argv.includes('--open') && process.platform === 'win32') {
     spawn('cmd', ['/c', 'start', '', url], { detached: true, stdio: 'ignore' }).unref();
   }
 });

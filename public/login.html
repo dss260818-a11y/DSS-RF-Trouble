@@ -1,0 +1,60 @@
+﻿<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로그인 · RF 기술이슈 관리 시스템</title>
+<style>
+  :root{--bg2:#fff;--line:#d3dceb;--fg:#0e1a33;--fg2:#4f5e7a;--acc:#1d4fd8;--acc2:#163fae;--bad:#c62828}
+  @media (prefers-color-scheme: dark){:root{--bg2:#0c1b36;--line:#1f3763;--fg:#e6eeff;--fg2:#9fb2d6;--acc:#4da3ff;--acc2:#2f86ea;--bad:#f85149}}
+  *{box-sizing:border-box}
+  /* 회사 배경 사진(세계지도) 위에 로그인 카드 */
+  body{margin:0;min-height:100vh;display:grid;place-items:center;color:var(--fg);padding:16px;
+    background:linear-gradient(rgba(4,12,32,.55),rgba(4,12,32,.75)),#06122b url(/img/world-bg.jpg) center/cover no-repeat;
+    font:14px/1.55 "Malgun Gothic","맑은 고딕",-apple-system,"Segoe UI",sans-serif}
+  form{width:100%;max-width:360px;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:26px 24px;
+    box-shadow:0 18px 50px rgba(0,0,0,.45);border-top:3px solid #f2c14e}
+  .brand{text-align:center;margin-bottom:20px}
+  .logo{display:inline-block;background:#fff;border-radius:8px;padding:4px 10px}
+  .logo img{display:block;height:44px;width:auto}
+  h1{font-size:16px;margin:12px 0 0}
+  h1 .rf{color:#d99a0b}
+  label{display:block;font-size:12px;color:var(--fg2);font-weight:600;margin-bottom:5px}
+  input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font:inherit;outline:none}
+  input:focus{border-color:var(--acc)}
+  button{width:100%;margin-top:14px;padding:10px;border:0;border-radius:8px;background:var(--acc);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+  button:hover{background:var(--acc2)}
+  button:disabled{opacity:.6}
+  .err{color:var(--bad);font-size:12.5px;min-height:1.2em;margin-top:10px}
+  .hint{color:var(--fg2);font-size:12px;margin-top:6px}
+</style>
+</head>
+<body>
+<form id="f">
+  <div class="brand"><span class="logo"><img src="/img/dss-logo.png" alt="(주)디에스에스 DSS Co., Ltd."></span><h1><span class="rf">RF</span> 기술이슈 관리 시스템</h1></div>
+  <label for="pw">팀 비밀번호</label>
+  <input id="pw" type="password" autocomplete="current-password" autofocus required>
+  <div class="hint">한 번 로그인하면 이 브라우저에서 30일 동안 유지됩니다.</div>
+  <button id="go" type="submit">들어가기</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+document.getElementById('f').onsubmit = async e => {
+  e.preventDefault();
+  const go = document.getElementById('go'), err = document.getElementById('err');
+  go.disabled = true; err.textContent = '';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: document.getElementById('pw').value }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok && j.ok) { location.href = '/'; return; }
+    err.textContent = j.error || '로그인하지 못했습니다.';
+  } catch { err.textContent = '서버에 연결하지 못했습니다.'; }
+  go.disabled = false;
+  document.getElementById('pw').select();
+};
+</script>
+</body>
+</html>

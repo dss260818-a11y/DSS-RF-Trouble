@@ -153,6 +153,7 @@ function trimKb(r) {
 async function selectContext(question, searchFn, opts = {}) {
   const maxIssues = opts.maxIssues || 5;
   const maxKb = opts.maxKb || 8;
+  const maxFiles = opts.maxFiles || 5;   // 이름만, 경로는 넘기지 않는다
   const perTerm = opts.perTerm || 40;
 
   const terms = extractTerms(question, opts.maxTerms || 6);
@@ -186,13 +187,18 @@ async function selectContext(question, searchFn, opts = {}) {
 
   const issues = ranked.filter(e => e.row.kind === 'issue').slice(0, maxIssues);
   const kb = ranked.filter(e => e.row.kind === 'kb').slice(0, maxKb);
-  const fileCount = ranked.filter(e => e.row.kind === 'file').length;
+  const files = ranked.filter(e => e.row.kind === 'file');
 
   const localResults = {
     issues: issues.map(e => ({ ...trimIssue(e.row), _matched: e.hits, _exact: e.all })),
     kb: kb.map(e => ({ ...trimKb(e.row), _matched: e.hits, _exact: e.all })),
-    // 자료 파일은 경로가 사내 정보라 AI 에 넘기지 않는다. 몇 건인지만 센다.
-    files: { count: fileCount },
+    // 자료 파일은 이름만 넘긴다. 경로는 사내 정보라 절대 내보내지 않는다.
+    // 이름을 안다고 해서 안에 무엇이 적혀 있는지 아는 것은 아니다 — 그 점은
+    // 시스템 프롬프트에서 못박는다.
+    files: {
+      count: files.length,
+      names: files.slice(0, maxFiles).map(e => e.row.title),
+    },
   };
 
   return {

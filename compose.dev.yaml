@@ -1,0 +1,36 @@
+# PC(Docker Desktop) 에서 NAS 와 똑같은 컨테이너로 시험하기 위한 설정.
+# docker-dev.bat 이 이 파일로 실행한다.
+#
+#  - PC 에서 쓰던 data/ 와 섞이지 않게 .docker-data/ 를 따로 쓴다.
+#  - 포트 7332 (PC 의 기존 프로그램 7331 과 동시에 켤 수 있게).
+#  - 공유폴더는 SMB(CIFS)로 직접 붙인다. NAS 계정은 docker.env 의 NAS_USER / NAS_PASS.
+#    (비밀번호에 쉼표(,)가 있으면 CIFS 옵션이 깨지므로 읽기 전용 계정을 따로 두는 것이 좋다)
+services:
+  rf-issue-db:
+    build: .
+    image: rf-issue-db:dev
+    container_name: rf-issue-db-dev
+    ports:
+      - "7332:7331"
+    env_file: docker.env
+    volumes:
+      - ./config.docker.json:/app/config.json:ro
+      - ./.docker-data:/app/data
+      - ./.docker-data/backup:/backup
+      - nas7:/mnt/nas7:ro
+      - nas1:/mnt/nas1:ro
+
+# 공개 저장소라 NAS 주소·공유폴더 이름은 자리표시(<NAS>, 공유폴더A/B)로 둔다. 쓰기 전에 실제 값으로 바꿀 것.
+volumes:
+  nas7:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//<NAS>/공유폴더A"
+      o: "username=${NAS_USER},password=${NAS_PASS},vers=3.0,ro,iocharset=utf8,uid=1000,gid=1000,file_mode=0444,dir_mode=0555"
+  nas1:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: "//<NAS>/공유폴더B"
+      o: "username=${NAS_USER},password=${NAS_PASS},vers=3.0,ro,iocharset=utf8,uid=1000,gid=1000,file_mode=0444,dir_mode=0555"

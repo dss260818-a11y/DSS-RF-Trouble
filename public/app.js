@@ -5,11 +5,20 @@ const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// 날짜·ISO 시각을 이 PC 기준 'YYYY-MM-DD' 로. (toISOString 은 UTC 라 아침 9시 전엔 하루가 밀린다)
+const ymd = d => {
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+  const z = new Date(d);
+  if (isNaN(z)) return '';
+  return z.getFullYear() + '-' + String(z.getMonth() + 1).padStart(2, '0') + '-' + String(z.getDate()).padStart(2, '0');
+};
 
 const api = async (url, opt) => {
   const r = await fetch(url, opt);
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  // 팀 비밀번호 로그인이 풀렸으면 로그인 화면으로
+  if (r.status === 401 && j.code === 'AUTH') { location.href = '/login.html'; throw new Error(j.error); }
+  if (!r.ok) throw Object.assign(new Error(j.error || ('HTTP ' + r.status)), { code: j.code });
   return j;
 };
 const post = (url, data) => api(url, {
@@ -34,16 +43,75 @@ $$('.tab').forEach(b => b.onclick = () => {
   $$('.panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + b.dataset.tab));
   if (b.dataset.tab === 'map') loadMap();
   if (b.dataset.tab === 'issues') renderIssues();
+  if (b.dataset.tab === 'weekly') renderWeekly();
+  if (b.dataset.tab === 'trips') renderTrips();
   if (b.dataset.tab === 'settings') renderSettings();
 });
+// 회사 로고를 누르면 통합검색 화면으로
+$('.brand .logo').onclick = e => {
+  e.preventDefault();
+  $('.tab[data-tab="search"]').click();
+  scrollTo({ top: 0 });
+};
 
 /* ================= 파일 열기 ================= */
-async function openPath(p, reveal) {
+// 두 가지 방식. 서버가 /api/meta 의 caps.open 으로 알려 준다.
+//  desktop  : 윈도우 PC 에서 혼자 쓸 때. 서버(=내 PC)가 Word·탐색기를 바로 띄운다.
+//  download : 도커/NAS 등 여럿이 쓸 때. 파일은 브라우저로 받고(PDF·그림은 새 탭에서 보기),
+//             폴더나 "위치" 는 \\서버\... 경로를 복사해 탐색기 주소창에 붙여 넣게 한다.
+const DESKTOP_OPEN = () => !META.caps || META.caps.open === 'desktop';
+const INLINE_EXT = /\.(pdf|png|jpe?g|gif|webp|bmp)$/i;
+const baseName = p => String(p).split(/[\\/]/).pop();
+const looksFile = p => /\.[A-Za-z0-9]{1,6}$/.test(baseName(p));
+const parentDir = p => String(p).replace(/[\\/][^\\/]*$/, '');
+
+function copyText(s) {
+  // http://<NAS IP> 는 "보안 연결" 이 아니라 navigator.clipboard 가 막힌다 → 옛 방식으로
+  const ta = document.createElement('textarea');
+  ta.value = s; ta.setAttribute('readonly', '');
+  ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(ta); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch { /* 아래에서 안내 */ }
+  ta.remove();
+  if (!ok && navigator.clipboard) navigator.clipboard.writeText(s).then(() => {}, () => {});
+  return ok;
+}
+
+function copyPath(p, what) {
+  if (copyText(p)) toast(`${what || '경로'}를 복사했습니다. 탐색기 주소창에 붙여넣기(Ctrl+V) 하세요.`);
+  else prompt('아래 경로를 복사(Ctrl+C)해 탐색기 주소창에 붙여 넣으세요.', p);
+}
+
+// 내려받기는 클릭 순간에 바로 시작해야 팝업 차단에 안 걸린다 (await 앞에서 처리)
+function download(url, inline) {
+  if (inline) { window.open(url, '_blank', 'noopener'); return; }
+  const a = document.createElement('a');
+  a.href = url; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+const fileUrl = p => '/api/file?path=' + encodeURIComponent(p);
+const uploadUrl = rel => '/api/file?upload=' + encodeURIComponent(rel);
+
+async function openPath(p, reveal, kind) {
   if (!p) return;
+  if (!DESKTOP_OPEN()) {
+    if (/^https?:/i.test(p)) { window.open(p, '_blank', 'noopener'); return; }
+    const isDir = kind === 'folder' || (kind !== 'file' && !looksFile(p));
+    if (reveal) return copyPath(isDir ? p : parentDir(p), '폴더 경로');
+    if (isDir) return copyPath(p, '폴더 경로');
+    return download(fileUrl(p), INLINE_EXT.test(p));
+  }
   try {
     const r = await post('/api/open', { path: p, reveal: !!reveal });
     if (!r.ok) toast(r.error, true);
   } catch (e) { toast(e.message, true); }
+}
+
+// 내려받기 방식에서는 "위치" 대신 "경로 복사" 로 보이게
+function relabel(root) {
+  if (DESKTOP_OPEN()) return;
+  $$(root + ' [data-act="reveal"]').forEach(b => { b.textContent = '경로 복사'; b.title = '\\\\서버\\... 경로를 복사합니다'; });
 }
 
 /* ================= 통합검색 ================= */
@@ -193,8 +261,8 @@ function renderResult(r) {
       </div>
       <div class="acts">
         ${L && (L.kind === 'file' || L.kind === 'folder' || L.kind === 'url')
-          ? `<button data-act="open" data-p="${esc(L.path)}">열기</button>
-             ${L.kind !== 'url' ? `<button data-act="reveal" data-p="${esc(L.path)}">위치</button>` : ''}`
+          ? `<button data-act="open" data-k="${esc(L.kind)}" data-p="${esc(L.path)}">열기</button>
+             ${L.kind !== 'url' ? `<button data-act="reveal" data-k="${esc(L.kind)}" data-p="${esc(L.path)}">위치</button>` : ''}`
           : ''}
       </div>
     </div>`;
@@ -207,8 +275,8 @@ function renderResult(r) {
       <div class="s">${esc(r.subtitle)}${r.mtime ? ' · ' + r.mtime : ''}${r.size ? ' · ' + fmtSize(r.size) : ''}</div>
     </div>
     <div class="acts">
-      <button data-act="open" data-p="${esc(r.link.path)}">열기</button>
-      <button data-act="reveal" data-p="${esc(r.link.path)}">위치</button>
+      <button data-act="open" data-k="${r.dir ? 'folder' : 'file'}" data-p="${esc(r.link.path)}">열기</button>
+      <button data-act="reveal" data-k="${r.dir ? 'folder' : 'file'}" data-p="${esc(r.link.path)}">위치</button>
     </div>
   </div>`;
 }
@@ -220,11 +288,12 @@ function bindResults() {
   $$('#results [data-act]').forEach(b => b.onclick = e => {
     e.stopPropagation();
     const a = b.dataset.act;
-    if (a === 'open') openPath(b.dataset.p, false);
-    else if (a === 'reveal') openPath(b.dataset.p, true);
+    if (a === 'open') openPath(b.dataset.p, false, b.dataset.k);
+    else if (a === 'reveal') openPath(b.dataset.p, true, b.dataset.k);
     else if (a === 'issue') showIssue(b.dataset.id);
   });
   $$('#results [data-issue]').forEach(d => d.onclick = () => showIssue(d.dataset.issue));
+  relabel('#results');
 }
 
 /* ================= 신입 교육 가이드 (유형 → 단계 → 항목) ================= */
@@ -328,8 +397,8 @@ function guideStep(box, t, s) {
         ${it.note ? `<div class="gi-note">${esc(it.note)}</div>` : ''}
         ${L && L.path && !it.sheet ? `<div class="gi-path">${esc(L.path)}</div>` : ''}
         <div class="gi-acts">
-          ${openable ? `<button data-act="open" data-p="${esc(L.path)}">📂 자료 열기</button>
-            ${L.kind !== 'url' ? `<button data-act="reveal" data-p="${esc(L.path)}">위치</button>` : ''}` : ''}
+          ${openable ? `<button data-act="open" data-k="${esc(L.kind)}" data-p="${esc(L.path)}">📂 자료 열기</button>
+            ${L.kind !== 'url' ? `<button data-act="reveal" data-k="${esc(L.kind)}" data-p="${esc(L.path)}">위치</button>` : ''}` : ''}
           ${it.sheet ? `<button data-act="sheet" data-s="${esc(it.sheet)}" data-i="${i}">📖 기술노트 보기</button>` : ''}
           <button data-act="find" data-q="${esc(plain(it.title))}">🔎 통합검색</button>
         </div>
@@ -358,11 +427,12 @@ function guideStep(box, t, s) {
   });
   $$('#guide .gi-acts button').forEach(b => b.onclick = () => {
     const a = b.dataset.act;
-    if (a === 'open') openPath(b.dataset.p, false);
-    else if (a === 'reveal') openPath(b.dataset.p, true);
+    if (a === 'open') openPath(b.dataset.p, false, b.dataset.k);
+    else if (a === 'reveal') openPath(b.dataset.p, true, b.dataset.k);
     else if (a === 'find') { $('#q').value = b.dataset.q; doSearch(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
     else if (a === 'sheet') toggleSheet(b);
   });
+  relabel('#guide');
 }
 
 function toggleSheet(b) {
@@ -405,7 +475,7 @@ async function loadMap(force) {
       const clickable = L && (L.kind === 'file' || L.kind === 'folder' || L.kind === 'url');
       const missing = L && L.kind === 'missing';
       return `<div class="it ${g}${clickable ? '' : ' nolink'}"
-        ${clickable ? `data-p="${esc(L.path)}"` : ''}
+        ${clickable ? `data-p="${esc(L.path)}" data-k="${esc(L.kind)}"` : ''}
         title="${esc(e.note || e.title)}">
         <span>${esc(e.title)}</span>
         ${e.note ? '<span class="memo" title="메모 있음">✎</span>' : ''}
@@ -414,7 +484,7 @@ async function loadMap(force) {
     }).join('');
     return `<div class="sec"><h3>${esc(s.section || '(구분 없음)')}</h3><div class="items">${items}</div></div>`;
   }).join('');
-  $$('#map .it[data-p]').forEach(d => d.onclick = () => openPath(d.dataset.p, false));
+  $$('#map .it[data-p]').forEach(d => d.onclick = () => openPath(d.dataset.p, false, d.dataset.k));
   mapLoaded = true;
 }
 
@@ -458,6 +528,7 @@ function renderIssues() {
         ${i.category ? `<span>🏷 ${esc(i.category)}</span>` : ''}
         ${i.alarmCode ? `<span>🚨 ${esc(i.alarmCode)}</span>` : ''}
         ${i.occurredAt ? `<span>📅 ${esc(i.occurredAt)}</span>` : ''}
+        ${i.dueDate && i.status !== '완료' ? `<span${i.dueDate < ymd(new Date()) ? ' class="overdue"' : ''}>🎯 ${esc(i.dueDate)}</span>` : ''}
         ${(i.refs || []).length ? `<span>📎 ${i.refs.length}</span>` : ''}
       </div>
       ${i.symptom ? `<div class="body">${esc(i.symptom)}</div>` : ''}
@@ -476,7 +547,22 @@ function showIssue(id) {
   $('#btn-save').textContent = '수정';
   $('#btn-save').onclick = () => openForm(it);
   $('#modal').hidden = false;
-  $$('.modal-body [data-p]').forEach(b => b.onclick = () => openPath(b.dataset.p, false));
+  bindRefButtons('.modal-body');
+}
+
+// 관련 자료 버튼: 공유폴더 경로(data-p) / 올린 첨부(data-u) / 경로 복사(data-c)
+function bindRefButtons(root) {
+  $$(root + ' [data-p]').forEach(b => b.onclick = () => openPath(b.dataset.p, false));
+  $$(root + ' [data-u]').forEach(b => b.onclick = () => download(uploadUrl(b.dataset.u), INLINE_EXT.test(b.dataset.u)));
+  $$(root + ' [data-c]').forEach(b => b.onclick = () => copyPath(b.dataset.c));
+}
+
+function refRow(r, tail) {
+  const sub = r.upload ? '올린 첨부파일' + (r.size ? ' · ' + fmtSize(r.size) : '') : r.path;
+  const open = r.upload ? `<button data-u="${esc(r.upload)}">열기</button>`
+    : `<button data-p="${esc(r.path)}">열기</button>` +
+      (DESKTOP_OPEN() || /^https?:/i.test(r.path) ? '' : `<button data-c="${esc(r.path)}" title="탐색기에 붙여 넣을 경로">경로 복사</button>`);
+  return `<div class="r"><span>${esc(r.label || r.path)}<small>${esc(sub)}</small></span>${open}${tail || ''}</div>`;
 }
 
 function detailHtml(i) {
@@ -490,7 +576,9 @@ function detailHtml(i) {
       <dt>장비 / 모델</dt><dd>${esc([i.equipment, i.model].filter(Boolean).join(' ')) || '-'}</dd>
       <dt>분류 / 알람</dt><dd>${esc([i.category, i.alarmCode].filter(Boolean).join(' · ')) || '-'}</dd>
       <dt>발생일</dt><dd>${esc(i.occurredAt || '-')}${i.timeToFix ? ' · 소요 ' + esc(i.timeToFix) : ''}</dd>
-      <dt>담당</dt><dd>${esc(i.engineer || '-')}</dd>
+      ${i.engineer ? `<dt>담당</dt><dd>${esc(i.engineer)}</dd>` : ''}
+      ${i.dueDate ? `<dt>목표 완료일</dt><dd>${esc(i.dueDate)}</dd>` : ''}
+      ${i.status === '완료' && i.closedAt ? `<dt>완료일</dt><dd>${esc(ymd(i.closedAt))}</dd>` : ''}
       ${(i.tags || []).length ? `<dt>태그</dt><dd>${i.tags.map(t => `<code>${esc(t)}</code>`).join(' ')}</dd>` : ''}
       <dt>등록 / 수정</dt><dd>${esc((i.createdAt || '').slice(0, 10))} / ${esc((i.updatedAt || '').slice(0, 10))}</dd>
     </dl>
@@ -499,15 +587,17 @@ function detailHtml(i) {
     ${sec('조치 방법', i.action)}
     ${sec('결과', i.result)}
     ${sec('재발 방지 / 참고', i.preventive)}
-    ${refs.length ? `<h4>관련 자료</h4><div class="ref-list">${refs.map(r => `
-      <div class="r"><span>${esc(r.label || r.path)}<small>${esc(r.path)}</small></span>
-        <button data-p="${esc(r.path)}">열기</button></div>`).join('')}</div>` : ''}
+    ${(i.progress || []).length ? `<h4>진행 이력</h4><div class="prog-view">${
+      i.progress.map(p => `<div class="pv-row"><b>${esc(p.date)} (${dowOf(p.date)})</b><div><div class="pv-text">${esc(p.text)}</div>${
+        (p.files || []).map(f => `<button class="pv-file" data-u="${esc(f.upload)}">📎 ${esc(f.label)}</button>`).join('')}</div></div>`).join('')}</div>` : ''}
+    ${sec('다음주 계획', i.nextPlan)}
+    ${refs.length ? `<h4>관련 자료</h4><div class="ref-list">${refs.map(r => refRow(r)).join('')}</div>` : ''}
   </div>`;
 }
 
 /* ================= 이슈 입력 폼 ================= */
 const FORM_HTML = $('.modal-body').innerHTML;   // 최초 HTML 보관
-let curRefs = [];
+let curRefs = [], curProg = [];
 
 $('#btn-new').onclick = () => openForm(null);
 $('#modal-close').onclick = closeModal;
@@ -526,18 +616,21 @@ function openForm(it) {
   v('#f-title', it && it.title);       v('#f-customer', it && it.customer);
   v('#f-site', it && it.site);         v('#f-equipment', it && it.equipment);
   v('#f-model', it && it.model);       v('#f-category', it && it.category);
-  v('#f-alarm', it && it.alarmCode);   v('#f-engineer', it && it.engineer);
+  v('#f-alarm', it && it.alarmCode);
   v('#f-status', (it && it.status) || '진행중');
   v('#f-severity', (it && it.severity) || '보통');
   v('#f-time', it && it.timeToFix);
-  v('#f-occurred', (it && it.occurredAt) || new Date().toISOString().slice(0, 10));
+  v('#f-occurred', (it && it.occurredAt) || ymd(new Date()));
   v('#f-tags', it && (it.tags || []).join(', '));
   v('#f-symptom', it && it.symptom);   v('#f-cause', it && it.cause);
   v('#f-action', it && it.action);     v('#f-result', it && it.result);
   v('#f-preventive', it && it.preventive);
+  v('#f-due', it && it.dueDate);       v('#f-nextplan', it && it.nextPlan);
 
   curRefs = it ? [...(it.refs || []), ...(it.attachments || [])] : [];
+  curProg = it ? (it.progress || []).map(p => ({ ...p, files: [...(p.files || [])] })) : [];
   renderRefs();
+  renderProg();
   fillModelList();
 
   $('#btn-delete').hidden = !it;
@@ -547,6 +640,10 @@ function openForm(it) {
   $('#btn-save').onclick = saveIssue;
   $('#ref-search').addEventListener('input', refSearch);
   $('#btn-pick-file').onclick = pickFiles;
+  if (META.caps && !META.caps.pick) $('#btn-pick-file').textContent = '내 PC 파일 올리기';
+  $('#file-up').onchange = e => uploadFiles([...e.target.files]);
+  $('#prog-add').onclick = addProg;
+  $('#prog-file').onchange = e => attachProgFiles([...e.target.files]);
   setTimeout(() => $('#f-title').focus(), 30);
 }
 
@@ -583,6 +680,8 @@ function refSearch() {
 }
 
 async function pickFiles() {
+  // 여럿이 쓰는 서버에서는 파일을 서버로 올린다 (data/uploads 에 저장, 팀원 누구나 받을 수 있음)
+  if (META.caps && !META.caps.pick) { $('#file-up').value = ''; $('#file-up').click(); return; }
   const r = await post('/api/pick', {});
   (r.paths || []).forEach(p => {
     if (!curRefs.some(x => x.path === p)) curRefs.push({ label: p.split('\\').pop(), path: p });
@@ -590,26 +689,107 @@ async function pickFiles() {
   renderRefs();
 }
 
+// 파일 하나를 서버(data/uploads)에 올리고 { label, upload, size } 를 돌려준다. 실패하면 null.
+async function uploadOne(f) {
+  const max = ((META.caps && META.caps.uploadMaxMB) || 100) * 1048576;
+  if (f.size > max) { toast(`'${f.name}' 은(는) 너무 큽니다 (최대 ${Math.round(max / 1048576)}MB).`, true); return null; }
+  toast(`올리는 중… ${f.name}`);
+  try {
+    const r = await api('/api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name) },
+      body: f,
+    });
+    toast(`올렸습니다: ${f.name}  (이슈를 저장해야 연결됩니다)`);
+    return r.ref;
+  } catch (e) { toast(f.name + ': ' + e.message, true); return null; }
+}
+
+async function uploadFiles(files) {
+  for (const f of files) {
+    const ref = await uploadOne(f);
+    if (ref) { curRefs.push(ref); renderRefs(); }
+  }
+}
 function renderRefs() {
   $('#ref-list').innerHTML = curRefs.map((r, i) =>
-    `<div class="r"><span>${esc(r.label)}<small>${esc(r.path)}</small></span>
+    `<div class="r"><span>${esc(r.label)}<small>${esc(r.upload ? '올린 첨부파일' + (r.size ? ' · ' + fmtSize(r.size) : '') : r.path)}</small></span>
       <button data-i="${i}" title="제거">✕</button></div>`).join('');
   $$('#ref-list button').forEach(b => b.onclick = () => {
     curRefs.splice(+b.dataset.i, 1); renderRefs();
   });
 }
 
+// 진행 이력: 날짜별로 여러 줄. 줄마다 날짜·내용을 고칠 수 있고 파일을 붙일 수 있다.
+// 글자를 칠 때마다 다시 그리면 커서가 사라지므로, 입력은 curProg 에 바로 담기만 한다.
+let progTarget = -1;      // 지금 파일을 붙이려는 줄 번호
+
+function renderProg() {
+  const box = $('#prog-list');
+  if (!box) return;
+  box.innerHTML = curProg.length ? curProg.map((p, i) => `
+    <div class="prog-row" data-i="${i}">
+      <input type="date" class="pg-date" value="${esc(p.date)}">
+      <div class="pg-main">
+        <textarea class="pg-text" rows="2" placeholder="이 날 한 일. 예) 교체 기판 입고, 현장 재현 테스트 완료">${esc(p.text)}</textarea>
+        <div class="pg-files">${(p.files || []).map((f, k) => `
+          <span class="pg-file"><button type="button" class="pg-open" data-k="${k}" title="열기">📎 ${esc(f.label)}</button><button type="button" class="pg-rm" data-k="${k}" title="이 파일 빼기">✕</button></span>`).join('')}
+          <button type="button" class="pg-up">＋ 파일·문서</button>
+        </div>
+      </div>
+      <button type="button" class="pg-del" title="이 줄 지우기">✕</button>
+    </div>`).join('')
+    : '<div class="prog-empty">아직 적은 진행 이력이 없습니다. 아래 버튼으로 날짜별로 추가하세요.</div>';
+
+  $$('#prog-list .prog-row').forEach(row => {
+    const i = +row.dataset.i, p = curProg[i];
+    row.querySelector('.pg-date').oninput = e => { p.date = e.target.value; };
+    row.querySelector('.pg-text').oninput = e => { p.text = e.target.value; };
+    row.querySelector('.pg-up').onclick = () => { progTarget = i; $('#prog-file').value = ''; $('#prog-file').click(); };
+    row.querySelectorAll('.pg-open').forEach(b => b.onclick = () => {
+      const f = p.files[+b.dataset.k]; download(uploadUrl(f.upload), INLINE_EXT.test(f.upload));
+    });
+    row.querySelectorAll('.pg-rm').forEach(b => b.onclick = () => { p.files.splice(+b.dataset.k, 1); renderProg(); });
+    row.querySelector('.pg-del').onclick = () => {
+      if ((p.text.trim() || (p.files || []).length) && !confirm(`${p.date} 진행 이력을 지울까요?`)) return;
+      curProg.splice(i, 1); renderProg();
+    };
+  });
+}
+
+function addProg() {
+  curProg.push({ date: ymd(new Date()), text: '', files: [] });
+  renderProg();
+  const rows = $$('#prog-list .pg-text');
+  if (rows.length) rows[rows.length - 1].focus();
+}
+
+async function attachProgFiles(files) {
+  const p = curProg[progTarget];
+  if (!p) return;
+  for (const f of files) {
+    const ref = await uploadOne(f);
+    if (ref) { (p.files = p.files || []).push(ref); renderProg(); }
+  }
+}
 async function saveIssue() {
   const g = id => { const e = $(id); return e ? e.value.trim() : ''; };
+  // 내용도 파일도 없는 빈 줄은 버리고, 날짜 순으로 정리해서 보낸다
+  const progress = curProg
+    .map(p => ({ date: p.date || ymd(new Date()), text: (p.text || '').trim(), files: p.files || [] }))
+    .filter(p => p.text || p.files.length)
+    .sort((a, b) => a.date.localeCompare(b.date));
   const payload = {
     title: g('#f-title'), customer: g('#f-customer'), site: g('#f-site'),
     equipment: g('#f-equipment'), model: g('#f-model'), category: g('#f-category'),
-    alarmCode: g('#f-alarm'), engineer: g('#f-engineer'), status: g('#f-status'),
+    alarmCode: g('#f-alarm'), status: g('#f-status'),   // 담당 엔지니어는 입력받지 않는다 (예전 값은 그대로 둠)
     severity: g('#f-severity'), timeToFix: g('#f-time'), occurredAt: g('#f-occurred'),
     tags: g('#f-tags').split(',').map(s => s.trim()).filter(Boolean),
     symptom: g('#f-symptom'), cause: g('#f-cause'), action: g('#f-action'),
     result: g('#f-result'), preventive: g('#f-preventive'),
     refs: curRefs, attachments: [],
+    dueDate: g('#f-due'), nextPlan: g('#f-nextplan'), progress,
+    baseUpdatedAt: EDITING ? EDITING.updatedAt : undefined,   // 그 사이 남이 고쳤는지 서버가 확인
   };
   if (!payload.title) { toast('제목을 입력하세요.', true); $('#f-title').focus(); return; }
   try {
@@ -618,6 +798,7 @@ async function saveIssue() {
     else await post('/api/issues', payload);
     await loadIssues();
     renderIssues();
+    if ($('#tab-weekly').classList.contains('active')) renderWeekly();
     closeModal();
     toast(EDITING ? '수정되었습니다.' : '이슈가 등록되었습니다.');
     refreshStats();
@@ -629,6 +810,7 @@ async function removeIssue(it) {
   try {
     await api('/api/issues/' + encodeURIComponent(it.id), { method: 'DELETE' });
     await loadIssues(); renderIssues(); closeModal();
+    if ($('#tab-weekly').classList.contains('active')) renderWeekly();
     toast('삭제되었습니다.'); refreshStats();
   } catch (e) { toast(e.message, true); }
 }
@@ -647,6 +829,8 @@ function autoRefreshText() {
 }
 
 async function renderSettings() {
+  $('#auth-row').hidden = !(META.caps && META.caps.auth);
+  if (!DESKTOP_OPEN()) { $('#btn-open-src').textContent = '원본 엑셀 내려받기'; $('#btn-open-base').textContent = '자료 폴더 경로 복사'; }
   $('#settings-info').innerHTML = `
     <dt>원본 엑셀</dt><dd>${esc(META.sourceExcel || '-')}</dd>
     <dt>자료 기준 폴더</dt><dd>${esc(META.baseDir || '-')}</dd>
@@ -683,8 +867,9 @@ $('#btn-rebuild').onclick = async () => {
   b.disabled = false; b.textContent = '엑셀에서 다시 읽어오기 (재색인)';
 };
 
-$('#btn-open-src').onclick = () => openPath(META.sourceExcel, false);
-$('#btn-open-base').onclick = () => openPath(META.baseDir, false);
+$('#btn-open-src').onclick = () => openPath(META.sourceExcel, false, 'file');
+$('#btn-open-base').onclick = () => openPath(META.baseDir, false, 'folder');
+$('#btn-logout').onclick = async () => { try { await post('/api/logout'); } catch {} location.href = '/login.html'; };
 
 /* ================= 시작 ================= */
 function fillCustomerList() {
@@ -704,6 +889,490 @@ async function refreshStats() {
     (META.generatedAt ? ` · 색인 ${new Date(META.generatedAt).toLocaleDateString('ko-KR')}` : ' · 색인 없음');
 }
 
+/* ================= 주간보고 ================= */
+// 미완료 이슈 주간보고 = 위: 이번주 변동(신규·완료·진행·장기/지연·업데이트 없음) + 아래: 미완료 전체 표.
+// 화면·인쇄·메일 복사가 같은 틀(wkHtml)을 쓴다. 메일은 CSS 가 안 따라가므로 스타일을 글자에 직접 박는다.
+
+// 진행 이력 한 줄을 글로: 내용 + 붙인 파일 수
+const progLabel = p => [p.text, (p.files || []).length ? `📎${p.files.length}` : ''].filter(Boolean).join(' ');
+
+const LONG_DAYS = 14;                                   // 이 이상 열려 있으면 "장기"
+const SEV_ORDER = { 긴급: 0, 높음: 1, 보통: 2, 낮음: 3 };
+const SEV_ICON  = { 긴급: '🔴', 높음: '🟠', 보통: '🟡', 낮음: '⚪' };
+
+const addDays = (s, n) => { const d = new Date(s + 'T00:00'); d.setDate(d.getDate() + n); return ymd(d); };
+const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00') - new Date(a + 'T00:00')) / 86400000);
+const mmdd = s => s ? s.slice(5).replace('-', '/') : '';
+
+function weekOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00');
+  const start = addDays(dateStr, -((d.getDay() + 6) % 7));   // 월요일
+  return { start, end: addDays(start, 6) };                  // ~ 일요일
+}
+
+let WK_DATE = ymd(new Date());
+
+function wkData() {
+  const { start, end } = weekOf(WK_DATE);
+  const today = ymd(new Date());
+  const ref = end < today ? end : today;                     // 경과일은 주 끝(또는 오늘)까지
+  const inWeek = s => s && s >= start && s <= end;
+
+  const rows = ISSUES.map(i => {
+    const created = ymd(i.createdAt) || i.occurredAt || today;
+    const begin = i.occurredAt || created;
+    const closed = i.status === '완료' ? ymd(i.closedAt || i.updatedAt) : '';
+    return {
+      i, created, closed,
+      open: created <= end && (!closed || closed > end),
+      age: Math.max(0, daysBetween(begin, ref)),
+      prog: (i.progress || []).filter(p => inWeek(p.date)),
+      overdue: !!(i.dueDate && i.dueDate < ref),
+    };
+  }).filter(r => r.created <= end);
+
+  const open = rows.filter(r => r.open).sort((a, b) =>
+    (SEV_ORDER[a.i.severity] ?? 2) - (SEV_ORDER[b.i.severity] ?? 2) || b.age - a.age);
+  const isNew = r => inWeek(r.created);
+  return {
+    start, end, ref, open,
+    // 주간보고는 미완료 이슈만 다룬다 — 완료된 건은 신규 목록에서도 뺀다
+    news:  open.filter(isNew),
+    moved: open.filter(r => r.prog.length),
+    alert: open.filter(r => r.age >= LONG_DAYS || r.overdue || r.i.status === '보류'),
+    idle:  open.filter(r => !r.prog.length && !isNew(r)),
+    hold:  open.filter(r => r.i.status === '보류').length,
+  };
+}
+
+// 화면/인쇄는 class, 메일은 inline style. 같은 이름표로 두 가지를 다 낸다.
+const WK_MAIL = {
+  wrap:  'font-family:Malgun Gothic,sans-serif;font-size:13px;color:#1b1f27;line-height:1.55',
+  h:     'font-size:17px;font-weight:700;margin:0 0 2px',
+  sub:   'color:#5a6373;font-size:12px;margin:0 0 10px',
+  sum:   'background:#eef3ff;border:1px solid #c9d8ff;border-radius:8px;padding:8px 12px;margin:0 0 14px;font-weight:600',
+  sec:   'font-size:14px;font-weight:700;margin:16px 0 6px;border-bottom:2px solid #1f6feb;padding-bottom:3px',
+  grp:   'margin:6px 0 2px;font-weight:700',
+  li:    'margin:1px 0 1px 18px',
+  dim:   'color:#6b7688',
+  red:   'color:#c62828;font-weight:700',
+  table: 'border-collapse:collapse;width:100%;font-size:12px',
+  th:    'background:#1f3b6e;color:#fff;padding:5px 6px;border:1px solid #b9c3d3;text-align:left;white-space:nowrap',
+  td:    'padding:4px 6px;border:1px solid #b9c3d3;vertical-align:top',
+  trlong:'background:#fdecea',
+  id:    'font-family:Consolas,monospace;white-space:nowrap',
+};
+const wkAttr = (mail, key) => mail ? `style="${WK_MAIL[key]}"` : `class="wk-${key}"`;
+
+function wkHtml(D, mail) {
+  const A = k => wkAttr(mail, k);
+  const author = $('#wk-author').value.trim();
+  const idTag = i => mail ? `<span ${A('id')}>${esc(i.id)}</span>`
+    : `<button class="wk-id" data-issue="${esc(i.id)}">${esc(i.id)}</button>`;
+  const who = i => esc(i.customer || '고객사 미기재');
+  const line = (r, extra) => `<div ${A('li')}>${idTag(r.i)} ${who(r.i)} · ${esc(r.i.title)}${extra ? ' ' + extra : ''}</div>`;
+  const group = (icon, title, list, fn) => `<div ${A('grp')}>${icon} ${title} (${list.length})</div>` +
+    (list.length ? list.map(fn).join('') : `<div ${A('li')}><span ${A('dim')}>없음</span></div>`);
+
+  const why = r => [
+    r.age >= LONG_DAYS ? `${r.age}일째` : '',
+    r.i.status === '보류' ? '보류' : '',
+    r.overdue ? `목표일(${mmdd(r.i.dueDate)}) 지남 D+${daysBetween(r.i.dueDate, D.ref)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  const changes =
+    group('🆕', '신규', D.news, r => line(r, `[${esc(r.i.severity || '보통')}]`)) +
+    group('🔄', '진행', D.moved, r => line(r, `<span ${A('dim')}>→ ${esc(r.prog.map(progLabel).join(' / '))}</span>`)) +
+    group('⚠', `장기(${LONG_DAYS}일↑)·지연·보류`, D.alert, r => line(r, `<span ${A('red')}>${esc(why(r))}</span>`)) +
+    (D.idle.length ? `<div ${A('grp')}>💤 이번주 진행 기록 없음 (${D.idle.length})</div><div ${A('li')}><span ${A('dim')}>${
+      D.idle.map(r => esc(r.i.id)).join(', ')}</span></div>` : '');
+
+  const cols = ['No', '이슈번호', '고객사', '장비', '제목', '중요도', '상태', '경과', '목표일', '다음주 계획'];
+  const table = D.open.length ? `<table ${A('table')}><thead><tr>${cols.map(c => `<th ${A('th')}>${c}</th>`).join('')}</tr></thead><tbody>${
+    D.open.map((r, n) => {
+      const i = r.i, long = r.age >= LONG_DAYS;
+      const td = (v, k) => `<td ${A(k || 'td')}>${v}</td>`;
+      return `<tr ${long ? A('trlong') : ''}>` +
+        td(n + 1) + td(idTag(i)) + td(who(i)) + td(esc(i.equipment || '-')) + td(esc(i.title)) +
+        td(`${SEV_ICON[i.severity] || ''}${esc(i.severity || '보통')}`) +
+        td(i.status === '보류' ? '⏸보류' : esc(i.status || '진행중')) +
+        td(long ? `<span ${A('red')}>${r.age}일</span>` : r.age + '일') +
+        td(i.dueDate ? (r.overdue ? `<span ${A('red')}>${mmdd(i.dueDate)}</span>` : mmdd(i.dueDate)) : '-') +
+        td(esc(i.nextPlan || '-')) + '</tr>';
+    }).join('')}</tbody></table>`
+    : `<div ${A('dim')}>이 주 기준 미완료 이슈가 없습니다. 👍</div>`;
+
+  return `<div ${A('wrap')}>
+    <div ${A('h')}>■ 주간 미완료 이슈 보고 (${D.start} ~ ${mmdd(D.end)})</div>
+    <div ${A('sub')}>${author ? '작성: ' + esc(author) + ' · ' : ''}작성일 ${ymd(new Date())}</div>
+    <div ${A('sum')}>요약: 미완료 ${D.open.length}건 (진행중 ${D.open.length - D.hold} · 보류 ${D.hold})
+      · 이번주 신규 ${D.news.length} · 장기/지연 ${D.alert.length}</div>
+    <div ${A('sec')}>1. 이번주 변동</div>
+    ${changes}
+    <div ${A('sec')}>2. 미완료 이슈 현황 <span ${A('dim')}>(중요도 → 경과일 순, ${LONG_DAYS}일 이상은 빨간색)</span></div>
+    ${table}
+  </div>`;
+}
+
+// 메일 본문이 HTML 을 못 받을 때를 위한 글자판
+function wkText(D) {
+  const L = [];
+  const author = $('#wk-author').value.trim();
+  L.push(`■ 주간 미완료 이슈 보고 (${D.start} ~ ${mmdd(D.end)})${author ? '  작성: ' + author : ''}`);
+  L.push(`요약: 미완료 ${D.open.length}건 (진행중 ${D.open.length - D.hold} · 보류 ${D.hold}) · 신규 ${D.news.length} · 장기/지연 ${D.alert.length}`, '');
+  const g = (t, list, f) => { L.push(`${t} (${list.length})`); list.forEach(r => L.push('  ' + r.i.id + ' ' + (r.i.customer || '') + ' · ' + r.i.title + (f ? f(r) : ''))); };
+  g('[신규]', D.news);
+  g('[진행]', D.moved, r => ' → ' + r.prog.map(progLabel).join(' / '));
+  g('[장기·지연·보류]', D.alert, r => ` (${r.age}일${r.overdue ? ', 목표일 지남' : ''})`);
+  L.push('', '[미완료 현황]');
+  D.open.forEach((r, n) => L.push(`${n + 1}. ${r.i.id} | ${r.i.customer || '-'} | ${r.i.equipment || '-'} | ${r.i.title} | ${r.i.severity || '보통'} | ${r.i.status} | ${r.age}일 | 목표 ${r.i.dueDate || '-'} | 다음주: ${r.i.nextPlan || '-'}`));
+  return L.join('\n');
+}
+
+function renderWeekly() {
+  $('#wk-date').value = WK_DATE;
+  const box = $('#wk-report');
+  box.innerHTML = wkHtml(wkData(), false);
+  $$('#wk-report [data-issue]').forEach(b => b.onclick = () => showIssue(b.dataset.issue));
+}
+
+function wkMove(days) { WK_DATE = addDays(WK_DATE, days); renderWeekly(); }
+$('#wk-prev').onclick = () => wkMove(-7);
+$('#wk-next').onclick = () => wkMove(7);
+$('#wk-this').onclick = () => { WK_DATE = ymd(new Date()); renderWeekly(); };
+$('#wk-date').addEventListener('change', e => { if (e.target.value) { WK_DATE = e.target.value; renderWeekly(); } });
+
+// 작성자 이름은 이 PC 에만 기억한다 (없어도 동작)
+try { $('#wk-author').value = localStorage.getItem('wk-author') || ''; } catch {}
+$('#wk-author').addEventListener('input', e => {
+  try { localStorage.setItem('wk-author', e.target.value); } catch {}
+  renderWeekly();
+});
+
+$('#wk-print').onclick = () => {
+  document.body.classList.add('print-weekly');
+  window.print();
+};
+window.addEventListener('afterprint', () => document.body.classList.remove('print-weekly'));
+
+$('#wk-copy').onclick = async () => {
+  const D = wkData();
+  const html = wkHtml(D, true), text = wkText(D);
+  try {
+    await navigator.clipboard.write([new ClipboardItem({
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([text], { type: 'text/plain' }),
+    })]);
+    toast('복사했습니다. 메일 본문에 붙여넣기(Ctrl+V) 하세요.');
+  } catch {
+    // http://<서버IP> 로 접속하면 브라우저가 클립보드 API 를 막는다 → 옛 방식으로
+    const tmp = document.createElement('div');
+    tmp.innerHTML = html;
+    tmp.style.cssText = 'position:fixed;left:-9999px;top:0;background:#fff';
+    document.body.appendChild(tmp);
+    const range = document.createRange(); range.selectNodeContents(tmp);
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
+    const ok = document.execCommand('copy');
+    sel.removeAllRanges(); tmp.remove();
+    toast(ok ? '복사했습니다. 메일 본문에 붙여넣기(Ctrl+V) 하세요.' : '복사하지 못했습니다. 인쇄 / PDF 를 써 주세요.', !ok);
+  }
+};
+
+$('#wk-csv').onclick = () => {
+  const D = wkData();
+  const cols = ['구분', 'No', '이슈번호', '고객사', '사이트', '장비', '모델', '제목', '중요도', '상태',
+    '발생일', '경과(일)', '목표일', '이번주 진행', '다음주 계획'];
+  const q = v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const row = (kind, r, n) => [kind, n, r.i.id, r.i.customer, r.i.site, r.i.equipment, r.i.model, r.i.title,
+    r.i.severity, r.i.status, r.i.occurredAt, r.age, r.i.dueDate,
+    r.prog.map(p => `[${p.date}] ${progLabel(p)}`).join('\n'), r.i.nextPlan].map(q).join(',');
+  const lines = [cols.join(','),
+    ...D.open.map((r, n) => row('미완료', r, n + 1))];
+  const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `주간보고_${D.start}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+/* ================= 출장 일정 ================= */
+// 한 주(월~일)의 납품 출장을 RF / MB / Cable 로 나눠 보여 준다. 한 줄 = 제품 한 대(케이블은 한 품목).
+// 주 이동·인쇄는 주간보고와 같은 방식(weekOf, print-weekly)을 쓴다.
+
+const DOW = ['일', '월', '화', '수', '목', '금', '토'];
+const dowOf = s => s ? DOW[new Date(s + 'T00:00').getDay()] : '';
+// 칸 정의: [머리글, 값 만들기(t), 칸 class]. 국내 납품 3종은 날짜·요일·거래처·사이트·납품자·비고가 같고
+// 가운데 제품 칸만 다르다. 기타 출장은 제품 칸 없이 기간·장소·목적을 본다.
+const dowCell = s => { const d = dowOf(s); return `<span class="tr-dow${d === '토' ? ' sat' : d === '일' ? ' sun' : ''}">${d}</span>`; };
+const tripDays = t => t.endDate ? daysBetween(t.date, t.endDate) + 1 : 1;
+const plainCol = (h, k, cls) => [h, t => esc(t[k] || ''), cls];
+const domestic = mid => [
+  ['날짜', t => mmdd(t.date)], ['요일', t => dowCell(t.date)],
+  plainCol('거래처', 'customer'), plainCol('사이트', 'site'),
+  ...mid,
+  plainCol('납품자', 'deliverer'), plainCol('비고', 'memo'),
+];
+const TRIP_SEC = [
+  { type: 'RF',    title: 'RF Generator', icon: '⚡', unit: '대',
+    cols: domestic([plainCol('제품명', 'product'), plainCol('L/N', 'lot', 'tr-code'), plainCol('S/N', 'serial', 'tr-code')]) },
+  { type: 'MB',    title: 'Matching Box', icon: '🎛', unit: '대',
+    cols: domestic([plainCol('제품명', 'product'), plainCol('L/N', 'lot', 'tr-code'), plainCol('S/N', 'serial', 'tr-code')]) },
+  { type: 'CABLE', title: 'Cable',        icon: '🧵', unit: '건',
+    cols: domestic([plainCol('품명 / 규격', 'spec'), plainCol('길이', 'length'), plainCol('수량', 'qty')]) },
+  { type: 'OVERSEAS', title: '기타 출장', icon: '🧳', unit: '건',
+    cols: [
+      ['기간', t => `${mmdd(t.date)}(${dowCell(t.date)})` + (t.endDate && t.endDate !== t.date ? ` ~ ${mmdd(t.endDate)}(${dowCell(t.endDate)})` : '')],
+      ['일수', t => tripDays(t) + '일'],
+      plainCol('장소', 'place'), plainCol('방문처', 'customer'), plainCol('출장자', 'deliverer'),
+      plainCol('목적', 'purpose'), plainCol('비고', 'memo'),
+    ] },
+];
+const TRIP_NAME = Object.fromEntries(TRIP_SEC.map(s => [s.type, s.title]));
+
+let TR_DATE = ymd(new Date());
+let TRIPS = [], TRIP_ALL = [];       // 이번 주 / 자동완성용 전체
+let TRIP_EDIT = null, TRIP_TYPE = 'RF';
+
+async function loadTrips() {
+  const { start, end } = weekOf(TR_DATE);
+  const [wk, all] = await Promise.all([api(`/api/trips?from=${start}&to=${end}`), api('/api/trips')]);
+  TRIPS = wk.trips.sort((a, b) => a.date.localeCompare(b.date) || a.customer.localeCompare(b.customer));
+  TRIP_ALL = all.trips;
+}
+
+async function renderTrips() {
+  $('#tr-date').value = TR_DATE;
+  try { await loadTrips(); } catch (e) { toast(e.message, true); return; }
+  const { start, end } = weekOf(TR_DATE);
+  const by = t => TRIPS.filter(x => x.type === t);
+  const dom = TRIPS.filter(t => t.type !== 'OVERSEAS');
+  const days = new Set(dom.map(t => t.date)).size;
+  const custs = new Set(dom.map(t => t.customer)).size;
+  const qtyCable = by('CABLE').reduce((n, t) => n + (parseInt(t.qty, 10) || 1), 0);
+
+  const section = s => {
+    const rows = by(s.type);
+    const body = rows.length ? rows.map(t => `<tr class="tr-row" data-id="${esc(t.id)}">${
+      s.cols.map(([, fn, cls]) => `<td class="wk-td${cls ? ' ' + cls : ''}">${fn(t)}</td>`).join('')}</tr>`).join('')
+      : `<tr><td class="wk-td wk-dim" colspan="${s.cols.length}">일정 없음</td></tr>`;
+    return `<div class="tr-sec tr-sec-${s.type.toLowerCase()}">
+      <div class="wk-sec tr-sec-h">${s.icon} ${s.title} <span class="wk-dim">(${rows.length}${s.unit})</span>
+        <button class="ghost tr-add" data-type="${s.type}">＋ ${s.title} 추가</button></div>
+      <div class="wk-wrap"><table class="wk-table"><thead><tr>${s.cols.map(c => `<th class="wk-th">${c[0]}</th>`).join('')}</tr></thead>
+      <tbody>${body}</tbody></table></div></div>`;
+  };
+
+  $('#tr-report').innerHTML = `
+    <div class="wk-h">■ 금주 출장 일정 (${start} ~ ${mmdd(end)})</div>
+    <div class="wk-sub">작성일 ${ymd(new Date())}</div>
+    <div class="wk-sum">RF ${by('RF').length}대 · MB ${by('MB').length}대 · Cable ${by('CABLE').length}건(${qtyCable}개)
+      · 납품 출장일 ${days}일 · 거래처 ${custs}곳 · 기타 출장 ${by('OVERSEAS').length}건</div>
+    ${TRIP_SEC.map(section).join('')}
+    <div class="hint tr-hint">줄을 누르면 고칠 수 있습니다. 여러 날에 걸친 기타 출장은 겹치는 주마다 나옵니다.</div>`;
+
+  $$('#tr-report .tr-add').forEach(b => b.onclick = () => openTrip(null, b.dataset.type));
+  $$('#tr-report .tr-row').forEach(r => r.onclick = () => openTrip(TRIPS.find(t => t.id === r.dataset.id)));
+}
+function trMove(days) { TR_DATE = addDays(TR_DATE, days); renderTrips(); }
+$('#tr-prev').onclick = () => trMove(-7);
+$('#tr-next').onclick = () => trMove(7);
+$('#tr-this').onclick = () => { TR_DATE = ymd(new Date()); renderTrips(); };
+$('#tr-date').addEventListener('change', e => { if (e.target.value) { TR_DATE = e.target.value; renderTrips(); } });
+$('#tr-print').onclick = () => { document.body.classList.add('print-weekly'); window.print(); };
+
+$('#tr-csv').onclick = () => {
+  const { start } = weekOf(TR_DATE);
+  const cols = ['구분', '날짜(출발)', '요일', '복귀일', '거래처/방문처', '사이트', '장소', '제품명/품명', 'L/N', 'S/N', '길이', '수량', '납품자/출장자', '목적', '비고'];
+  const q = v => { const s = String(v == null ? '' : v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+  const order = { RF: 0, MB: 1, CABLE: 2, OVERSEAS: 3 };
+  const rows = TRIPS.slice().sort((a, b) => order[a.type] - order[b.type] || a.date.localeCompare(b.date))
+    .map(t => [TRIP_NAME[t.type], t.date, dowOf(t.date), t.endDate, t.customer, t.site, t.place,
+      t.type === 'CABLE' ? t.spec : t.product, t.lot, t.serial, t.length, t.qty, t.deliverer, t.purpose, t.memo].map(q).join(','));
+  const blob = new Blob(['﻿' + [cols.join(','), ...rows].join('\r\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `출장일정_${start}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+
+/* ---- 입력 창 ---- */
+const tv = id => $(id).value.trim();
+const uniq = arr => [...new Set(arr.map(s => String(s || '').trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
+const fillList = (sel, arr) => { $(sel).innerHTML = uniq(arr).map(v => `<option value="${esc(v)}">`).join(''); };
+
+function setTripType(type) {
+  TRIP_TYPE = type;
+  $$('#trip-types button').forEach(b => b.classList.toggle('on', b.dataset.type === type));
+  const ovs = type === 'OVERSEAS';
+  $('.trip-box').classList.toggle('is-cable', type === 'CABLE');
+  $('.trip-box').classList.toggle('is-overseas', ovs);
+  // 기타 출장은 같은 칸을 다른 이름으로 쓴다 (날짜=출발일, 거래처=방문처, 납품자=출장자)
+  $('#t-date-lbl').textContent = ovs ? '출발일' : '날짜';
+  $('#t-cust-lbl').textContent = ovs ? '방문처' : '거래처';
+  $('#t-deliv-lbl').textContent = ovs ? '출장자' : '납품자';
+  $('#t-customer').placeholder = ovs ? '예) Kyosan 본사, 고객사 교육장' : '목록에서 고르거나 입력';
+  $('#t-deliverer').placeholder = ovs ? '예) 홍길동, 김철수' : '이름';
+  $('#t-memo').placeholder = ovs ? '항공편, 숙소, 연락처 등' : '교체 / 신규 / 데모 등';
+  // 제품명 자동완성: 같은 구분으로 전에 넣은 제품 + 기본 모델
+  const base = type === 'MB' ? ['CMK300M-IC2', 'CMK200M-IP1']
+    : type === 'RF' ? ['RFK150FH', 'RFK200FH', 'RFK300FH', 'KFK150FH', 'KFK200FH', 'KFK300FH', 'RFK100ZH', 'RFK150ZH', 'RFK200ZH', 'RFK300ZH'] : [];
+  fillList('#dl-trip-model', [...base, ...TRIP_ALL.filter(t => t.type === type).map(t => t.product)]);
+  $('#t-product').placeholder = type === 'MB' ? '예) CMK300M-IC2' : '예) RFK300FH';
+}
+
+function openTrip(t, type) {
+  TRIP_EDIT = t || null;
+  $('#trip-title').textContent = t ? '출장 일정 수정' : '출장 일정 추가';
+  const v = (id, val) => { $(id).value = val || ''; };
+  const { start } = weekOf(TR_DATE);
+  const today = ymd(new Date());
+  v('#t-date', t ? t.date : (weekOf(today).start === start ? today : start));
+  for (const k of ['customer', 'site', 'product', 'lot', 'serial', 'spec', 'length', 'qty', 'deliverer', 'memo', 'place', 'purpose'])
+    v('#t-' + k, t && t[k]);
+  v('#t-end', t && t.endDate);
+  fillList('#dl-trip-customer', [...(META.customers || []), ...TRIP_ALL.map(x => x.customer)]);
+  fillList('#dl-deliverer', [...TRIP_ALL.map(x => x.deliverer), ...ISSUES.map(i => i.engineer)]);
+  setTripType(t ? t.type : (type || 'RF'));
+  $('#t-dow').textContent = dowOf($('#t-date').value);
+  $('#t-end-dow').textContent = dowOf($('#t-end').value);
+  $('#trip-delete').hidden = !t;
+  $('#trip-again').checked = false;
+  $('#trip-again').parentElement.hidden = !!t;
+  $('#trip-modal').hidden = false;
+  setTimeout(() => $(t ? (t.type === 'OVERSEAS' ? '#t-purpose' : '#t-product') : '#t-customer').focus(), 30);
+}
+function closeTrip() { $('#trip-modal').hidden = true; TRIP_EDIT = null; }
+
+$$('#trip-types button').forEach(b => b.onclick = () => setTripType(b.dataset.type));
+$('#t-date').addEventListener('input', () => { $('#t-dow').textContent = dowOf($('#t-date').value); });
+$('#t-end').addEventListener('input', () => { $('#t-end-dow').textContent = dowOf($('#t-end').value); });
+$('#trip-close').onclick = closeTrip;
+$('#trip-cancel').onclick = closeTrip;
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#trip-modal').hidden) closeTrip(); });
+
+$('#trip-save').onclick = async () => {
+  const ovs = TRIP_TYPE === 'OVERSEAS';
+  const unit = TRIP_TYPE === 'RF' || TRIP_TYPE === 'MB', cable = TRIP_TYPE === 'CABLE';
+  const only = (cond, id) => cond ? tv(id) : '';
+  const payload = {
+    type: TRIP_TYPE, date: tv('#t-date'), customer: tv('#t-customer'),
+    deliverer: tv('#t-deliverer'), memo: tv('#t-memo'),
+    // 구분에 맞지 않는 칸은 비워서 저장 (RF 로 넣다가 Cable·기타 출장으로 바꾼 경우 등)
+    site: only(!ovs, '#t-site'),
+    product: only(unit, '#t-product'), lot: only(unit, '#t-lot'), serial: only(unit, '#t-serial'),
+    spec: only(cable, '#t-spec'), length: only(cable, '#t-length'), qty: only(cable, '#t-qty'),
+    endDate: only(ovs, '#t-end'), place: only(ovs, '#t-place'), purpose: only(ovs, '#t-purpose'),
+  };
+  if (!payload.date) { toast((ovs ? '출발일' : '날짜') + '을 입력하세요.', true); return $('#t-date').focus(); }
+  if (!payload.customer) { toast((ovs ? '방문처' : '거래처') + '를 입력하세요.', true); return $('#t-customer').focus(); }
+  if (payload.endDate && payload.endDate < payload.date) { toast('복귀일이 출발일보다 앞설 수 없습니다.', true); return $('#t-end').focus(); }
+  try {
+    if (TRIP_EDIT) await api('/api/trips/' + encodeURIComponent(TRIP_EDIT.id),
+      { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    else await post('/api/trips', payload);
+    const again = !TRIP_EDIT && $('#trip-again').checked;
+    toast(TRIP_EDIT ? '수정되었습니다.' : '추가되었습니다.');
+    if (weekOf(payload.date).start !== weekOf(TR_DATE).start) TR_DATE = payload.date;   // 다른 주로 넣었으면 그 주로
+    await renderTrips();
+    if (again) {
+      // 날짜·거래처·납품자·구분은 두고, 제품 칸만 비워 다음 대수를 바로 넣게
+      for (const k of ['product', 'lot', 'serial', 'spec', 'length', 'qty', 'memo', 'purpose']) $('#t-' + k).value = '';
+      setTripType(TRIP_TYPE);
+      $(TRIP_TYPE === 'CABLE' ? '#t-spec' : TRIP_TYPE === 'OVERSEAS' ? '#t-purpose' : '#t-product').focus();
+    } else closeTrip();
+  } catch (e) { toast(e.message, true); }
+};
+
+$('#trip-delete').onclick = async () => {
+  const t = TRIP_EDIT;
+  if (!t || !confirm(`${t.date}(${dowOf(t.date)}) ${t.customer} ${t.product || t.spec || t.purpose || ''}\n\n이 일정을 지울까요?`)) return;
+  try {
+    await api('/api/trips/' + encodeURIComponent(t.id), { method: 'DELETE' });
+    closeTrip(); toast('삭제되었습니다.'); renderTrips();
+  } catch (e) { toast(e.message, true); }
+};
+
+/* ================= AI 답변 ================= */
+// 기존 통합검색은 손대지 않는다. 검색은 지금처럼 입력할 때마다 돌고,
+// AI 는 사람이 단추를 누르거나 Enter 를 쳤을 때만 부른다(요금이 나가는 길이라 일부러 나눴다).
+
+let AI_READY = false, asking = false;
+
+async function initAI() {
+  try {
+    const st = await api('/api/ai/status');
+    AI_READY = !!st.ready;
+  } catch { AI_READY = false; }
+  $('#ai-bar').hidden = !AI_READY;      // 못 쓰면 화면에 아예 안 보인다
+}
+
+function aiBox(html) {
+  const p = $('#ai-panel');
+  p.hidden = false;
+  p.innerHTML = html;
+  $$('#ai-panel [data-issue]').forEach(b => b.onclick = () => showIssue(b.dataset.issue));
+}
+
+// 답변에 붙은 [AI 일반 지식] / [회사 저장자료] 머리말을 눈에 띄게 만든다.
+function renderAnswer(text) {
+  return esc(text)
+    .replace(/\[AI 일반 지식\]/g, '<span class="tag tag-ai">AI 일반 지식</span>')
+    .replace(/\[인터넷 검색\]/g, '<span class="tag tag-web">인터넷 검색</span>')
+    .replace(/\[회사 저장자료\]/g, '<span class="tag tag-local">회사 저장자료</span>')
+    .replace(/\n/g, '<br>');
+}
+
+async function doAsk() {
+  const q = $('#q').value.trim();
+  if (!q || asking) return;
+  if (!AI_READY) return;
+
+  asking = true;
+  aiBox('<div class="ai-wait">AI 가 생각하는 중입니다…</div>');
+  try {
+    const r = await post('/api/ask', { q });
+
+    if (!r.ok) {
+      aiBox('<div class="ai-err"><b>AI 답변을 받지 못했습니다.</b><br>' + esc(r.error || '') +
+            '<br><span class="ai-hint">아래 검색 결과는 그대로 쓰실 수 있습니다.</span></div>');
+      return;
+    }
+
+    const L = r.local || { issues: [], kb: [], files: { count: 0 } };
+    const chips = (r.citedIssues || []).map(id =>
+      '<button class="iss-chip" data-issue="' + esc(id) + '">' + esc(id) + '</button>').join(' ');
+
+    const foot = [
+      '참고한 사내 자료: 이슈 ' + L.issues.length + '건 · 지식 ' + L.kb.length + '건' +
+        ' · 자료 파일 이름 ' + ((L.files && L.files.names || []).length) + '건',
+      '질문 성격: ' + esc(r.intent),
+      r.usage ? '토큰 ' + (r.usage.total_tokens || 0) : '',
+      '인터넷 검색 없음',
+    ].filter(Boolean).join(' · ');
+
+    aiBox(
+      '<div class="ai-head">🤖 AI 답변</div>' +
+      '<div class="ai-body">' + renderAnswer(r.answer) + '</div>' +
+      (chips ? '<div class="ai-cite">관련 이슈: ' + chips + '</div>' : '') +
+      (r.inventedIssues && r.inventedIssues.length
+        ? '<div class="ai-warn">저장자료에 없는 이슈 번호가 답변에 있어 지웠습니다.</div>' : '') +
+      (r.unknownMasks && r.unknownMasks.length
+        ? '<div class="ai-warn">이번 질문에 쓰이지 않은 이름표(' + esc(r.unknownMasks.join(', ')) +
+          ')가 답변에 있습니다. AI 가 지어낸 것이라 실제 회사 이름으로 바꾸지 않았습니다.</div>' : '') +
+      '<div class="ai-foot">' + foot + '</div>'
+    );
+  } catch (e) {
+    aiBox('<div class="ai-err"><b>AI 답변을 받지 못했습니다.</b><br>' + esc(e.message) + '</div>');
+  } finally {
+    asking = false;
+  }
+}
+
+$('#btn-ask').onclick = doAsk;
+$('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doAsk(); });
+
 (async function init() {
   renderQuick();
   initVoice();
@@ -711,6 +1380,7 @@ async function refreshStats() {
     await refreshStats();
     await loadIssues();
   } catch (e) { toast('서버 연결 실패: ' + e.message, true); }
+  initAI();                 // 실패해도 기존 화면에 영향 없다
   doSearch();
   $('#q').focus();
 })();

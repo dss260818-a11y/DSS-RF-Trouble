@@ -1,0 +1,31 @@
+# 시놀로지 NAS (Container Manager → 프로젝트) 용.
+#
+# NAS 에 폴더 하나(예: /volume1/docker/rf-issue-db)를 만들고 이 저장소 내용과 함께
+#   config.docker.json  (config.docker.example.json 을 복사해 채움)
+#   docker.env          (docker.env.example 을 복사해 채움 — 팀 비밀번호 등)
+#   data/               (지금 PC 의 data 폴더를 그대로 복사)
+# 를 넣은 뒤, Container Manager 에서 이 폴더로 프로젝트를 만들면 된다.
+#
+# 아래 "공유폴더" 두 줄은 이 NAS 의 실제 공유폴더 위치로 고친다.
+# (File Station → 공유폴더 → 속성 의 "위치" 가 /volume1/... 로 나온다)
+services:
+  rf-issue-db:
+    build: .
+    image: rf-issue-db:latest
+    container_name: rf-issue-db
+    restart: unless-stopped
+    ports:
+      - "7331:7331"
+    env_file: docker.env
+    # data/ 폴더에 쓸 수 있는 NAS 사용자 번호. SSH 에서 `id 사용자이름` 으로 확인 (예: 1026:100)
+    user: "1026:100"
+    volumes:
+      - ./config.docker.json:/app/config.json:ro
+      - ./data:/app/data                 # 이슈·색인·첨부 — NAS 스냅샷/Hyper Backup 대상
+      - ./backup:/backup                 # 작업 일지 날짜별 사본
+      # 공유폴더 (읽기 전용). 왼쪽을 이 NAS 의 실제 위치로.
+      - /volume1/공유폴더A:/mnt/nas7:ro
+      - /volume1/공유폴더B:/mnt/nas1:ro
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }

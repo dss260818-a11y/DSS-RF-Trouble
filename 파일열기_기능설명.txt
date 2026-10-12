@@ -1,0 +1,164 @@
+================================================================
+ 웹 화면에서 "열기" 버튼으로 공유폴더(NAS) 파일을 여는 기능
+ — 동작 원리와 구현 방법 (Claude 프롬프트에 그대로 붙여 쓰는 용도)
+================================================================
+
+[한 줄 요약]
+브라우저는 보안상 \\서버\폴더\파일.docx 같은 로컬/네트워크 파일을 직접 열 수 없다.
+그래서 "열기" 버튼은 같은 PC에서 돌고 있는 Node.js 서버에 "이 경로 열어 줘" 라고
+요청만 보내고, 실제로 파일을 여는 일은 서버가 Windows 명령으로 대신 한다.
+결과적으로 Word / PowerPoint / 탐색기 같은 기본 프로그램이 서버 PC 화면에 뜬다.
+
+
+----------------------------------------------------------------
+1. 전체 흐름
+----------------------------------------------------------------
+
+  [브라우저]  "열기" 클릭
+      │  fetch POST /api/open   body: { "path": "\\\\<NAS>\\...\\파일.docx", "reveal": false }
+      ▼
+  [Node.js 서버 (localhost:7331)]
+      ├ 1) 허용된 경로인지 검사 (화이트리스트)
+      ├ 2) 파일/폴더가 실제로 있는지 검사 (fs.existsSync)
+      └ 3) Windows 에 열기 명령
+            - 파일   → 기본 연결 프로그램으로 실행 (docx→Word, pptx→PowerPoint, pdf→뷰어 …)
+            - 폴더   → 탐색기로 열기
+            - reveal → 탐색기를 열고 그 파일을 선택(하이라이트)한 상태로 보여 주기 ("위치" 버튼)
+            - http(s) 주소 → 기본 브라우저로 열기
+      ▼
+  응답 { ok: true }  또는  { ok: false, error: "허용되지 않은 경로입니다…" } → 화면에 토스트로 표시
+
+
+----------------------------------------------------------------
+2. 화면(프론트엔드) 쪽
+----------------------------------------------------------------
+
+- 목록의 각 항목은 경로를 data 속성에 들고 있다.
+    <div class="r">
+      <span>파일이름.docx<small>\\<NAS>\...\파일이름.docx</small></span>
+      <button data-p="\\<NAS>\...\파일이름.docx">열기</button>
+    </div>
+  (경로는 반드시 HTML 이스케이프해서 넣는다. & < > " 처리)
+
+- 버튼을 누르면:
+    async function openPath(p, reveal) {
+      const r = await fetch('/api/open', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: p, reveal: !!reveal }),
+      }).then(r => r.json());
+      if (!r.ok) toast(r.error, true);   // 실패 사유를 사용자에게 보여 준다
+    }
+
+- 경로 데이터는 어디서 오나 (이 시스템 기준)
+    a) 이슈에 사람이 연결한 "관련 자료" (지식베이스 검색으로 고르거나, "내 PC 파일 첨부" 대화상자로 선택)
+    b) 원본 엑셀의 하이퍼링크를 색인할 때 뽑아 둔 경로 (재색인 시 갱신)
+
+
+----------------------------------------------------------------
+3. 서버 쪽 (Node.js, 외부 패키지 없음)
+----------------------------------------------------------------
+
+[3-1] 허용 경로 검사 — 아무 경로나 열게 하면 안 된다
+  config.json 예:
+    {
+      "baseDir": "\\\\<NAS>\\공유폴더A\\...\\2. 고객서비스_Customer service",
+      "allowedRoots": [ "\\\\<NAS>\\공유폴더B\\하위폴더" ]
+    }
+  규칙: 열려는 경로가 baseDir 또는 allowedRoots 중 하나의 "아래"에 있을 때만 허용.
+        (추가로, 사람이 이슈에 직접 등록한 경로와 정확히 같으면 허용)
+
+[3-2] 권장 구현 (안전한 버전)
+
+  const path = require('path');
+  const fs = require('fs');
+  const { spawn } = require('child_process');
+
+  // 경로를 정규화해서 비교한다. 문자열 startsWith 만 쓰면
+  //  "...\\허용폴더\\..\\..\\다른폴더" 나 "...\\허용폴더2" 가 통과해 버린다.
+  function isAllowed(p, roots) {
+    if (!p) return false;
+    const target = path.win32.resolve(p).toLowerCase();
+    return roots.filter(Boolean).some(r => {
+      const root = path.win32.resolve(r).toLowerCase().replace(/\\+$/, '');
+      return target === root || target.startsWith(root + '\\');
+    });
+  }
+
+  function openPath(p, reveal, roots) {
+    // 웹 주소: URL 로 파싱되는 http/https 만. cmd 를 거치지 않는다.
+    if (/^https?:/i.test(p)) {
+      let u; try { u = new URL(p); } catch { return { ok: false, error: '주소 형식이 잘못되었습니다' }; }
+      spawn('explorer.exe', [u.href], { detached: true, stdio: 'ignore' }).unref();
+      return { ok: true };
+    }
+    if (!isAllowed(p, roots)) return { ok: false, error: '허용되지 않은 경로입니다. config.json 의 allowedRoots 에 추가하세요.' };
+    if (!fs.existsSync(p))    return { ok: false, error: '파일/폴더가 존재하지 않습니다: ' + p };
+
+    // explorer.exe 에 파일 경로를 주면 기본 연결 프로그램으로 열리고, 폴더면 탐색기로 열린다.
+    // cmd /c start 를 쓰지 않으므로 & | ^ 같은 특수문자가 명령으로 해석될 일이 없다.
+    const args = reveal ? ['/select,', p] : [p];
+    spawn('explorer.exe', args, { detached: true, stdio: 'ignore' }).unref();
+    return { ok: true };
+  }
+
+  // 라우트
+  if (pathname === '/api/open' && req.method === 'POST') {
+    const b = await readJsonBody(req);
+    return sendJson(res, 200, openPath(String(b.path || ''), !!b.reveal, [CFG.baseDir, ...(CFG.allowedRoots || [])]));
+  }
+
+  포인트
+  - detached + stdio:'ignore' + unref() : 서버가 Word 가 닫힐 때까지 기다리지 않게 한다.
+  - 한글 경로는 Node 가 UTF-16 으로 넘기므로 그대로 동작한다 (별도 인코딩 처리 불필요).
+  - UNC 경로(\\서버\공유)는 그 PC 의 Windows 계정에 공유폴더 접근 권한이 있어야 열린다.
+    권한이 없으면 existsSync 가 false → "존재하지 않습니다" 로 보인다.
+
+[3-3] "내 PC 파일 첨부" 대화상자 (선택 기능)
+  브라우저의 <input type=file> 은 실제 전체 경로를 알려 주지 않는다.
+  그래서 서버가 PowerShell 로 Windows 파일 선택 창을 띄워 전체 경로를 받아 온다.
+
+  const ps = spawn('powershell.exe', ['-NoProfile', '-STA', '-Command',
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' +       // 한글 경로 깨짐 방지 (기본은 CP949)
+    'Add-Type -AssemblyName System.Windows.Forms; ' +
+    '$d=New-Object System.Windows.Forms.OpenFileDialog; $d.Multiselect=$true; ' +
+    'if($d.ShowDialog() -eq "OK"){$d.FileNames -join "`n"}']);
+  // stdout 을 줄 단위로 나눠 경로 배열로 돌려준다.
+
+
+----------------------------------------------------------------
+4. 꼭 알아야 할 제약 / 주의
+----------------------------------------------------------------
+
+(1) 파일은 "서버가 돌고 있는 PC" 에서 열린다.
+    - 각자 자기 PC 에서 서버를 실행하고 http://localhost:포트 로 쓰는 구조라면 문제없다.
+    - 서버를 한 대에 띄우고 동료가 http://<그 PC IP>:포트 로 접속하면,
+      동료가 "열기" 를 눌러도 파일은 동료 화면이 아니라 서버 PC 화면에 뜬다.
+    - 여러 명이 한 서버를 같이 쓰려면 다른 방식이 필요하다:
+        · 서버가 파일 내용을 HTTP 로 내려주기 (GET /api/file?path=… → 다운로드/브라우저 미리보기)
+        · 또는 경로를 클립보드로 복사해 주고 각자 탐색기에 붙여 넣게 하기
+        · (file:// 링크는 최신 브라우저가 http 페이지에서 막는다)
+
+(2) 서버를 사내망 전체에 열지 말 것.
+    - config 의 host 를 "127.0.0.1" 로 두면 그 PC 에서만 접속된다 (권장).
+    - "0.0.0.0" 으로 두면 같은 네트워크의 누구나 /api/open 을 호출해
+      서버 PC 에서 프로그램을 띄울 수 있다. 꼭 필요하면 위 (1) 의 다운로드 방식 + 로그인/토큰을 붙인다.
+
+(3) cmd /c start "" "경로" 방식은 피할 것.
+    - 흔히 쓰는 방법이지만 경로나 URL 에 & | ^ < > 가 섞이면 cmd 가 이를 명령으로 해석한다.
+      (예: "http://a|calc" 를 넘기면 계산기가 실행됨) → explorer.exe 에 인자로 직접 넘기는 쪽이 안전.
+
+(4) Docker / Linux 로 옮기면 이 기능은 그대로 안 된다.
+    - 컨테이너 안에는 Windows 탐색기·Word 가 없다. (1) 의 "HTTP 로 파일 내려주기" 방식으로 바꿔야 한다.
+
+
+----------------------------------------------------------------
+5. Claude 에게 요청할 때 쓸 수 있는 프롬프트 예시
+----------------------------------------------------------------
+
+  "Node.js(외부 패키지 없이) 로컬 웹서버에 POST /api/open 엔드포인트를 만들어 줘.
+   body 의 path 가 config.json 의 baseDir/allowedRoots 아래(path.win32.resolve 로 정규화해서 비교)일 때만,
+   존재하는지 확인하고 explorer.exe 로 연다(reveal=true 면 '/select,' 로 탐색기에서 선택).
+   http/https 주소는 new URL 로 검증 후 explorer.exe 로 연다. cmd /c start 는 쓰지 마.
+   서버는 127.0.0.1 에만 바인딩. 프론트에는 data-p 속성을 가진 '열기' 버튼을 두고
+   fetch 로 호출해서 실패하면 error 메시지를 토스트로 보여 줘."

@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { parseXlsx } = require('./parse-xlsx');
 const { excelSignature, isAbs, XLSX_RE, TEMP_RE } = require('./excel-sig');
+const { local } = require('./paths');   // UNC → 실제로 읽을 경로 (도커에서는 마운트 위치)
 
 const ROOT = path.resolve(__dirname, '..');
 const CFG = JSON.parse(fs.readFileSync(path.join(ROOT, 'config.json'), 'utf8'));
@@ -29,7 +30,7 @@ function resolveTarget(target, baseDir) {
 
 function statKind(p) {
   try {
-    return fs.statSync(p).isDirectory() ? 'folder' : 'file';
+    return fs.statSync(local(p)).isDirectory() ? 'folder' : 'file';
   } catch { return 'missing'; }
 }
 
@@ -37,7 +38,7 @@ function statKind(p) {
 const SRC = CFG.sourceExcel;
 const BASE = CFG.baseDir || path.win32.dirname(SRC);
 log('엑셀 읽는 중:', SRC);
-const wb = parseXlsx(SRC);
+const wb = parseXlsx(local(SRC));
 
 const GROUP_OF_COL = n => (n >= 2 && n <= 6) ? 'RF Generator' : (n >= 7 && n <= 11) ? 'Matching Box' : '공통';
 
@@ -126,7 +127,7 @@ function walk(dir, out, depth) {
   if (out.length > 30000) return;
   if (depth > MAX_DEPTH) { deepSkipped++; return; }
   let items;
-  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  try { items = fs.readdirSync(local(dir), { withFileTypes: true }); } catch { return; }
   for (const it of items) {
     const p = path.win32.join(dir, it.name);
     if (it.isDirectory()) {
@@ -136,7 +137,7 @@ function walk(dir, out, depth) {
     } else if (it.isFile()) {
       if (SKIP_FILE.test(it.name)) continue;
       let size = 0, mtime = '';
-      try { const st = fs.statSync(p); size = st.size; mtime = st.mtime.toISOString().slice(0, 10); } catch { /* 접근 불가 무시 */ }
+      try { const st = fs.statSync(local(p)); size = st.size; mtime = st.mtime.toISOString().slice(0, 10); } catch { /* 접근 불가 무시 */ }
       out.push({ name: it.name, path: p, dir: false, size, mtime });
     }
   }
@@ -163,7 +164,7 @@ function listExcels(target) {
   while (stack.length) {
     const dir = stack.pop();
     let items;
-    try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    try { items = fs.readdirSync(local(dir), { withFileTypes: true }); } catch { continue; }
     for (const it of items) {
       const p = path.win32.join(dir, it.name);
       if (it.isDirectory()) { if (!SKIP_DIR.test(it.name)) stack.push(p); }
@@ -178,7 +179,7 @@ const LABELISH = v => v.length <= 14 && !/[0-9]/.test(v);
 
 function indexExtraExcel(file) {
   let wbx;
-  try { wbx = parseXlsx(file); }
+  try { wbx = parseXlsx(local(file)); }
   catch (e) { log('  ! 엑셀을 읽지 못했습니다:', file, String((e && e.message) || e)); return 0; }
 
   const label = path.win32.basename(file).replace(XLSX_RE, '');

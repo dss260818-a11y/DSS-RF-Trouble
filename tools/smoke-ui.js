@@ -41,13 +41,34 @@ const document = {
   addEventListener() {},
 };
 
+// 팀 비밀번호(TEAM_PASSWORD)가 켜져 있으면 먼저 로그인해서 받은 쿠키로 요청한다
+const envPw = (() => {
+  if (process.env.TEAM_PASSWORD) return process.env.TEAM_PASSWORD;
+  try {
+    const m = fs.readFileSync(path.join(ROOT, '.env'), 'utf8').match(/^\s*TEAM_PASSWORD\s*=\s*(.*?)\s*$/m);
+    return m ? m[1].replace(/^["']|["']$/g, '') : '';
+  } catch { return ''; }
+})();
+const login = !envPw ? Promise.resolve('') :
+  globalThis.fetch(BASE + '/api/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password: envPw }),
+  }).then(r => (r.headers.get('set-cookie') || '').split(';')[0]);
+const authFetch = async (u, o = {}) => {
+  const cookie = await login;
+  const headers = cookie ? { ...(o.headers || {}), Cookie: cookie } : o.headers;
+  return globalThis.fetch(String(u).startsWith('http') ? u : BASE + u, { ...o, headers });
+};
+
 const errors = [];
 process.on('unhandledRejection', e => errors.push('unhandledRejection: ' + (e && e.message || e)));
 
 const ctx = vm.createContext({
   document,
-  window: {},
-  fetch: (u, o) => globalThis.fetch(String(u).startsWith('http') ? u : BASE + u, o),
+  window: { addEventListener() {}, open() {}, print() {} },
+  localStorage: { getItem: () => null, setItem() {} },
+  prompt: () => null,
+  fetch: authFetch,
   setTimeout, clearTimeout, console,
   Date, JSON, Math, Set, Map, Array, Object, String, Number, Boolean, Promise, RegExp, Error,
   encodeURIComponent, decodeURIComponent,
@@ -118,7 +139,7 @@ const step = async (label, fn) => {
   await step('상세', () => {
     ctx.ISSUES = [];
     const sample = {
-      id: 'ISS-TEST', title: '샘플', customer: 'ICD', equipment: 'RF Generator',
+      id: 'ISS-TEST', title: '샘플', customer: 'SAMPLE', equipment: 'RF Generator',
       symptom: '증상', cause: '원인', action: '조치', tags: ['t1'],
       refs: [{ label: 'a', path: 'C:\\a.txt' }], createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z',
     };

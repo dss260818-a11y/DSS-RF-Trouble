@@ -10,9 +10,12 @@
 #  - backup.log   : 작업 일지를 공유폴더로 백업한 기록. 공유폴더 경로가 들어갑니다.
 #                   (아래 data/* 규칙에 이미 포함되므로 따로 적지 않습니다)
 #  - synonyms.json : 손으로 만든 연관어 사전. 재생성되지 않으므로 이것만 백업합니다.
+#  - protected-names.json : 외부 AI 로 내보낼 때 가릴 회사 이름. 화면·검색에는 영향이
+#                    없습니다. protected-names.example.json 을 복사해 만드세요.
 data/*
 !data/synonyms.json
 !data/customers.example.json
+!data/protected-names.example.json
 
 # 임시 / 환경 파일
 *.tmp
@@ -36,3 +39,9 @@ server.err.log
 # 사내 NAS 주소/경로가 들어 있으므로 저장소에 올리지 않습니다.
 # config.example.json 을 복사해 config.json 으로 만들어 쓰세요.
 config.json
+
+# 도커: 비밀값·NAS 경로가 든 설정과 시험용 데이터
+docker.env
+config.docker.json
+.docker-data/
+backup/

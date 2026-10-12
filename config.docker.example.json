@@ -1,0 +1,43 @@
+{
+  "_설명": "도커용 설정. config.docker.json 으로 복사해 값을 채우세요. 경로는 윈도우 PC 용 config.json 과 똑같이 UNC 로 적고, pathMap 으로 컨테이너 안 위치를 알려 줍니다.",
+
+  "sourceExcel": "\\\\<NAS-IP>\\<공유폴더>\\<고객서비스 폴더>\\<업무정리 엑셀 파일>.xlsx",
+  "baseDir": "\\\\<NAS-IP>\\<공유폴더>\\<고객서비스 폴더>",
+  "scanDirs": [
+    "업부정리 엑셀에 인용한 자료",
+    "자료방"
+  ],
+  "allowedRoots": [],
+  "extraExcels": [],
+
+  "pathMap": {
+    "\\\\<NAS-IP>\\<공유폴더>": "/mnt/nas7",
+    "\\\\<NAS-IP>\\<두번째 공유폴더>": "/mnt/nas1"
+  },
+
+  "port": 7331,
+  "host": "0.0.0.0",
+  "autoRefreshSec": 60,
+  "uploadMaxMB": 100,
+
+  "backup": {
+    "dir": "/backup",
+    "intervalMin": 30,
+    "onExit": true,
+    "keep": 0,
+    "timeoutSec": 10
+  },
+
+  "ai": {
+    "enabled": false,
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1",
+    "redact": true,
+    "maxIssues": 5,
+    "maxKb": 8,
+    "timeoutSec": 30,
+    "rateLimitPerMin": 10,
+    "monthlyTokenBudget": 3000000
+  }
+}

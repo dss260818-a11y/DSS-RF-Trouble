@@ -3,6 +3,7 @@
 // NAS 공유폴더에서는 fs.watch 알림이 미더워서, 수정시각·크기를 직접 비교한다.
 const fs = require('fs');
 const path = require('path');
+const { local } = require('./paths');
 
 const BS = String.fromCharCode(92);
 const XLSX_RE = /\.xlsx$/i;
@@ -28,11 +29,11 @@ function excelSignature(cfg) {
   const parts = [];
   const visit = (p, depth) => {
     let st;
-    try { st = fs.statSync(p); } catch { parts.push(p + '|없음'); return; }
+    try { st = fs.statSync(local(p)); } catch { parts.push(p + '|없음'); return; }
     if (!st.isDirectory()) { parts.push(p + '|' + st.size + '|' + Math.round(st.mtimeMs)); return; }
     if (depth >= MAX_DEPTH) return;
     let items;
-    try { items = fs.readdirSync(p, { withFileTypes: true }); } catch { return; }
+    try { items = fs.readdirSync(local(p), { withFileTypes: true }); } catch { return; }
     const sorted = items.slice().sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     for (const it of sorted) {
       if (it.isDirectory()) visit(path.win32.join(p, it.name), depth + 1);
