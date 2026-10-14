@@ -21,7 +21,7 @@ const yearOf = it => (it.occurredAt || it.createdAt || '').slice(0, 4) || '연�
 
 function rowOf(it) {
   // 제품 구분에 맞는 칸에 모델을 적는다. 모델이 비었으면 ○ 로 어느 제품인지만 표시.
-  // Total Controller · 기타 는 칸이 없어 RF Generator 칸에 "제품명 모델" 로 적는다.
+  // Total Controller · RF System (RF,M/B) · 기타 는 칸이 없어 RF Generator 칸에 "제품명 모델" 로 적는다.
   const eq = it.equipment || '', model = it.model || '';
   const gen = eq === 'RF Generator' ? model || '○' : eq === 'Matching Box' ? '' : [eq, model].filter(Boolean).join(' ');
   return [

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
@@ -79,7 +79,7 @@
 </section>
 
 <!-- ============ 주간보고 ============ -->
-<!-- 미완료 이슈 주간보고. 위: 이번주 변동(신규·완료·진행·장기), 아래: 미완료 전체 표.
+<!-- 미완료 이슈 주간보고. 요약 + 고객사별 미완료 표(조치 및 진행상황 포함).
      이슈 수정 화면의 "진행 이력 / 다음주 계획 / 목표 완료일" 을 모아 만든다. -->
 <section id="tab-weekly" class="panel">
   <div class="toolbar wk-tools">
@@ -89,7 +89,7 @@
     <button id="wk-this" class="ghost">이번주</button>
     <label class="wk-author">작성자 <input id="wk-author" placeholder="이름"></label>
     <span class="spacer"></span>
-    <button id="wk-copy" class="ghost">📋 메일용 복사</button>
+    <button id="wk-copy" class="ghost" title="미완료 이슈를 일본어로 번역해 Kyosan 재촉 메일 본문으로 복사합니다 (표만)">📋 Kyosan 미답변 재촉 메일용 복사</button>
     <button id="wk-csv" class="ghost">📥 엑셀</button>
     <button id="wk-print" class="primary">🖨 인쇄 / PDF</button>
   </div>
@@ -178,7 +178,7 @@
           <select id="f-equipment">
             <option value="">선택</option>
             <option>RF Generator</option><option>Matching Box</option>
-            <option>Total Controller</option><option>기타</option>
+            <option>Total Controller</option><option>RF System (RF,M/B)</option><option>기타</option>
           </select>
         </label>
         <label>모델
@@ -215,6 +215,21 @@
           </span>
         </label>
 
+        <label class="full">신규 기간 <small class="lbl-note">이 기간과 겹치는 주의 주간보고에 "신규" 로 나옵니다</small>
+          <!-- 기본은 등록한 주(월~일). 보고일이 월요일이 아닐 때 기간을 늘리거나 직접 고른다 -->
+          <span class="due-row">
+            <select id="f-new-mode">
+              <option value="">기본 (등록한 주 월~일)</option>
+              <option value="7">시작일부터 1주일</option>
+              <option value="14">시작일부터 2주일</option>
+              <option value="etc">직접 선택</option>
+            </select>
+            <input id="f-new-from" type="date" title="신규 시작일">
+            <span id="f-new-tilde">~</span>
+            <input id="f-new-until" type="date" title="신규 종료일">
+          </span>
+        </label>
+
         <label>상태
           <select id="f-status"><option>진행중</option><option>완료</option><option>보류</option></select>
         </label>
@@ -230,7 +245,7 @@
           <textarea id="f-symptom" rows="4" placeholder="고객이 호소한 현상, 알람 화면, 측정값 등"></textarea>
         </label>
         <div class="full progress-block">
-          <h4>진행 이력 <small>날짜별로 여러 줄 남길 수 있습니다 · 주간보고의 "이번주 진행" 에 나옵니다</small></h4>
+          <h4>진행 이력 <small>날짜별로 여러 줄 남길 수 있습니다 · 주간보고의 "조치 및 진행상황" 에 나옵니다</small></h4>
           <div id="prog-list" class="prog-list"></div>
           <button id="prog-add" type="button" class="ghost prog-add">＋ 진행 이력 추가</button>
           <input id="prog-file" type="file" multiple hidden>

@@ -9,6 +9,7 @@ const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 const { local, mapped } = require('./tools/paths');
 const { createAuth } = require('./tools/auth');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
+const { msgSentTime } = require('./tools/msg-date');
 
 // .env 를 읽어 환경변수에 채운다(AI API 키 등). 파일이 없어도 그냥 넘어간다.
 require('./tools/env').load();
@@ -192,6 +193,7 @@ const SYN_PATH = path.join(DATA, 'synonyms.json');
 // 없으면 그냥 비어 있는 채로 동작한다(data/customers.example.json 참고).
 const CUST_PATH = path.join(DATA, 'customers.json');
 let CUSTOMERS = [];    // 이슈 등록 화면의 고객사 자동완성 목록
+let CUSTOMERS_EN = {}; // 고객사 → 영문명 (Kyosan 재촉 메일용, customers.json 의 en)
 let SYN_GROUPS = [];   // [[{term, match}, ...], ...]
 let SYN_TERMS = [];    // [[term, groupIndex], ...]  긴 말부터
 
@@ -216,6 +218,7 @@ function loadSynonyms() {
   const raw = readJson(SYN_PATH, []);
   const cust = readJson(CUST_PATH, {}) || {};
   CUSTOMERS = Array.isArray(cust.list) ? cust.list.filter(Boolean) : [];
+  CUSTOMERS_EN = cust.en && typeof cust.en === 'object' ? cust.en : {};
   const raws = [...(Array.isArray(raw) ? raw : []), ...(Array.isArray(cust.synonyms) ? cust.synonyms : [])];
   SYN_GROUPS = [];
   const owner = new Map();               // 정규화된 말 -> 처음 등장한 묶음
@@ -708,24 +711,74 @@ function body(req) {
   });
 }
 
-const nextId = () => {
-  const y = new Date().getFullYear();
-  const n = ISSUES.filter(i => String(i.id).startsWith('ISS-' + y)).length + 1;
-  let id;
-  let k = n;
-  do { id = `ISS-${y}-${String(k++).padStart(4, '0')}`; } while (ISSUES.some(i => i.id === id));
-  return id;
+// Google 번역(키 없이 쓰는 공개 주소)으로 여러 글을 한 번에 일본어로.
+// 글마다 따로 부르면 Google 이 자동 요청으로 보고 막으므로(429) 한 요청에 묶어 보낸다.
+// 인터넷이 안 되거나 막히면 원문을 그대로 돌려주고 failed 로 센다.
+const TR_CACHE = new Map();
+// 번역기가 회사명을 엉뚱한 한자(交山·京山)로 옮기지 않게 미리 바꿔 둔다
+const TR_GLOSSARY = [[/교산|kyosan/gi, '京三']];
+async function translateJa(texts) {
+  const need = [...new Set(texts.filter(t => /[가-힣]/.test(t) && !TR_CACHE.has(t)))];
+  let failed = 0;
+  // 한 요청이 너무 길지 않게 4000자 정도씩 나눈다
+  const chunks = [[]];
+  let len = 0;
+  for (const t of need) {
+    if (len + t.length > 4000 && chunks.at(-1).length) { chunks.push([]); len = 0; }
+    chunks.at(-1).push(t); len += t.length;
+  }
+  for (const chunk of chunks.filter(c => c.length)) {
+    try {
+      const body = chunk.map(t => 'q=' + encodeURIComponent(TR_GLOSSARY.reduce((s, [re, to]) => s.replace(re, to), t))).join('&');
+      const r = await fetch('https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=ko&tl=ja', {
+        method: 'POST', body, signal: AbortSignal.timeout(10000),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      const arr = Array.isArray(j) ? j : [j];
+      chunk.forEach((t, k) => {
+        const v = Array.isArray(arr[k]) ? arr[k][0] : arr[k];    // sl=auto 면 [글, 언어] 꼴로 온다
+        if (typeof v === 'string' && v) TR_CACHE.set(t, v); else failed++;
+      });
+    } catch (e) {
+      console.warn('[번역] 실패:', e.message);
+      failed += chunk.length;
+    }
+  }
+  const out = texts.map(t => TR_CACHE.get(t) || t);
+  if (TR_CACHE.size > 2000) TR_CACHE.clear();
+  return { texts: out, failed };
+}
+
+// 이슈 번호: DSS-<발생연도>-<발생월 2자리><그달 순번 2자리>  예) 2026-10 의 세 번째 → DSS-2026-1003
+// 발생일이 없으면 오늘 기준. 순번은 그달 번호 중 가장 큰 것 + 1 (지운 번호는 다시 쓰지 않는다).
+// 한 달에 99건을 넘으면 DSS-2026-10100 처럼 자리가 늘어난다.
+const nextId = occurredAt => {
+  const d = /^\d{4}-\d{2}/.test(occurredAt || '') ? occurredAt : new Date().toLocaleDateString('sv-SE');
+  const prefix = `DSS-${d.slice(0, 4)}-${d.slice(5, 7)}`;
+  const max = ISSUES.reduce((m, i) => {
+    const s = String(i.id);
+    return s.startsWith(prefix) && /^\d+$/.test(s.slice(prefix.length)) ? Math.max(m, Number(s.slice(prefix.length))) : m;
+  }, 0);
+  return prefix + String(max + 1).padStart(2, '0');
 };
 
 const FIELDS = ['title', 'customer', 'site', 'equipment', 'model', 'category', 'alarmCode',
   'symptom', 'cause', 'action', 'result', 'preventive', 'status', 'severity',
   'engineer', 'occurredAt', 'timeToFix', 'tags', 'refs', 'attachments',
-  'progress', 'nextPlan', 'dueDate'];
+  'progress', 'nextPlan', 'dueDate', 'newFrom', 'newUntil'];
 
 function pick(src) {
   const o = {};
   for (const f of FIELDS) if (src[f] !== undefined) o[f] = src[f];
   if (Array.isArray(o.tags)) o.tags = o.tags.map(t => String(t).trim()).filter(Boolean);
+  // 신규 기간: 주간보고 "신규" 에 나오는 기간. 둘 다 바른 날짜일 때만 남기고, 아니면 둘 다 비운다(= 등록한 주).
+  if (o.newFrom !== undefined || o.newUntil !== undefined) {
+    const d = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : '';
+    const a = d(o.newFrom), b = d(o.newUntil);
+    if (a && b && a <= b) { o.newFrom = a; o.newUntil = b; } else { o.newFrom = ''; o.newUntil = ''; }
+  }
   // 진행 이력: [{ date: 'YYYY-MM-DD', text }] — 주간보고의 "이번주 진행" 이 여기서 나온다.
   // 줄마다 올린 파일(files: [{ label, upload, size }])을 붙일 수 있다. 내용이나 파일 중 하나는 있어야 남긴다.
   if (o.progress !== undefined) {
@@ -758,7 +811,7 @@ function toCsv(rows) {
   const cols = ['id', 'occurredAt', 'customer', 'site', 'equipment', 'model', 'category',
     'alarmCode', 'title', 'symptom', 'cause', 'action', 'result', 'preventive',
     'status', 'severity', 'engineer', 'timeToFix', 'tags', 'createdAt', 'updatedAt',
-    'dueDate', 'closedAt', 'nextPlan', 'progress'];
+    'dueDate', 'closedAt', 'nextPlan', 'progress', 'newFrom', 'newUntil'];
   const esc = v => {
     const s = Array.isArray(v)
       ? v.map(x => x && typeof x === 'object'
@@ -817,6 +870,7 @@ const server = http.createServer(async (req, res) => {
         autoRefresh: AUTO,
         backup: BACKUP.state,
         customers: [...new Set([...CUSTOMERS, ...ISSUES.map(i => i.customer).filter(Boolean)])],
+        customersEn: CUSTOMERS_EN,
         // 화면이 버튼을 어떻게 보일지 정하는 데 쓴다
         caps: {
           open: DESKTOP ? 'desktop' : 'download',   // 서버 화면에서 열기 / 내려받기+경로 복사
@@ -938,6 +992,24 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { trip: next });
     }
 
+    // Kyosan 재촉 메일용: 올린 .msg 파일들의 보낸 시각 { upload: ISO | null }
+    if (p === '/api/msgtimes' && req.method === 'POST') {
+      const b = await body(req);
+      const times = {};
+      for (const u of (Array.isArray(b.uploads) ? b.uploads : []).slice(0, 500)) {
+        const f = resolveDownload({ upload: u });
+        times[u] = f && /\.msg$/i.test(f.full) ? msgSentTime(f.full) : null;
+      }
+      return send(res, 200, { times });
+    }
+
+    // 교산 재촉 메일용: 한국어 → 일본어 (Google 번역). 실패한 줄은 원문 그대로 돌려주고 failed 로 센다.
+    if (p === '/api/translate' && req.method === 'POST') {
+      const b = await body(req);
+      const texts = (Array.isArray(b.texts) ? b.texts : []).slice(0, 200).map(t => String(t || ''));
+      return send(res, 200, await translateJa(texts));
+    }
+
     if (p === '/api/issues' && req.method === 'GET') {
       return send(res, 200, { issues: ISSUES });
     }
@@ -947,7 +1019,7 @@ const server = http.createServer(async (req, res) => {
       if (!b.title || !String(b.title).trim()) return send(res, 400, { error: '제목은 필수입니다.' });
       const now = new Date().toISOString();
       const it = stampClosed(null,
-        { id: nextId(), createdAt: now, updatedAt: now, status: '진행중', severity: '보통', ...pick(b) });
+        { id: nextId(b.occurredAt), createdAt: now, updatedAt: now, status: '진행중', severity: '보통', ...pick(b) });
       ISSUES.unshift(it);
       saveIssues();
       return send(res, 200, { issue: it });

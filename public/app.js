@@ -677,6 +677,27 @@ function initDue(due) {
   sync();
 }
 
+// 신규 기간: 기본(등록한 주) / 시작일부터 1주일 / 2주일 / 직접 선택. 주간보고 "신규" 가 이 기간을 따른다.
+// 기본이면 newFrom·newUntil 을 비워 두고, 주간보고는 예전처럼 등록한 주에만 신규로 본다.
+function initNewPeriod(it) {
+  const mode = $('#f-new-mode'), from = $('#f-new-from'), until = $('#f-new-until');
+  const sync = () => {
+    const n = Number(mode.value);
+    if (mode.value && !from.value) from.value = (it && ymd(it.createdAt)) || ymd(new Date());
+    if (n && from.value) until.value = addDays(from.value, n - 1);
+    if (!mode.value) from.value = until.value = '';
+    from.hidden = until.hidden = $('#f-new-tilde').hidden = !mode.value;
+    until.readOnly = mode.value !== 'etc';
+  };
+  from.value = (it && it.newFrom) || '';
+  until.value = (it && it.newUntil) || '';
+  const days = from.value && until.value ? daysBetween(from.value, until.value) + 1 : 0;
+  mode.value = !from.value ? '' : days === 7 ? '7' : days === 14 ? '14' : 'etc';
+  mode.onchange = sync;
+  from.addEventListener('change', sync);
+  sync();
+}
+
 function closeModal() { $('#modal').hidden = true; EDITING = null; }
 
 function openForm(it) {
@@ -698,6 +719,7 @@ function openForm(it) {
   v('#f-preventive', it && it.preventive);
   v('#f-due', it && it.dueDate);       v('#f-nextplan', it && it.nextPlan);
   initDue(it && it.dueDate);
+  initNewPeriod(it);
 
   curRefs = it ? [...(it.refs || []), ...(it.attachments || [])] : [];
   curProg = it ? (it.progress || []).map(p => ({ ...p, files: [...(p.files || [])] })) : [];
@@ -864,6 +886,13 @@ async function saveIssue() {
     baseUpdatedAt: EDITING ? EDITING.updatedAt : undefined,   // 그 사이 남이 고쳤는지 서버가 확인
   };
   if (!payload.title) { toast('제목을 입력하세요.', true); $('#f-title').focus(); return; }
+  payload.newFrom = g('#f-new-from'); payload.newUntil = g('#f-new-until');
+  if (payload.newFrom && payload.newUntil && payload.newUntil < payload.newFrom) {
+    toast('신규 기간의 종료일이 시작일보다 빠릅니다.', true); $('#f-new-until').focus(); return;
+  }
+  if (!payload.newFrom !== !payload.newUntil) {
+    toast('신규 기간의 시작일과 종료일을 모두 고르세요.', true); return;
+  }
   try {
     if (EDITING) await api('/api/issues/' + encodeURIComponent(EDITING.id),
       { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -962,7 +991,7 @@ async function refreshStats() {
 }
 
 /* ================= 주간보고 ================= */
-// 미완료 이슈 주간보고 = 위: 이번주 변동(신규·완료·진행·장기/지연·업데이트 없음) + 아래: 미완료 전체 표.
+// 미완료 이슈 주간보고 = 요약 + 고객사별 미완료 표(조치 및 진행상황 = 진행 이력 전체). 신규는 제목 앞 "신규" 표시.
 // 화면·인쇄·메일 복사가 같은 틀(wkHtml)을 쓴다. 메일은 CSS 가 안 따라가므로 스타일을 글자에 직접 박는다.
 
 // 진행 이력 한 줄을 글로: 내용 + 붙인 파일 수
@@ -999,20 +1028,24 @@ function wkData() {
       open: created <= end && (!closed || closed > end),
       age: Math.max(0, daysBetween(begin, ref)),
       prog: (i.progress || []).filter(p => inWeek(p.date)),
+      // 조치 및 진행상황: 이 주 끝까지 쌓인 진행 이력 전체(날짜순)
+      hist: (i.progress || []).filter(p => !p.date || p.date <= end)
+        .sort((a, b) => (a.date || '').localeCompare(b.date || '')),
       overdue: !!(i.dueDate && i.dueDate < ref),
     };
   }).filter(r => r.created <= end);
 
   const open = rows.filter(r => r.open).sort((a, b) =>
     (SEV_ORDER[a.i.severity] ?? 2) - (SEV_ORDER[b.i.severity] ?? 2) || b.age - a.age);
-  const isNew = r => inWeek(r.created);
+  // 신규 기간을 정해 둔 이슈는 그 기간이 이 주와 겹치면 신규, 아니면 등록한 주에만 신규
+  const isNew = r => r.i.newFrom && r.i.newUntil
+    ? r.i.newFrom <= end && r.i.newUntil >= start
+    : inWeek(r.created);
   return {
     start, end, ref, open,
     // 주간보고는 미완료 이슈만 다룬다 — 완료된 건은 신규 목록에서도 뺀다
     news:  open.filter(isNew),
-    moved: open.filter(r => r.prog.length),
-    alert: open.filter(r => r.age >= LONG_DAYS || r.overdue || r.i.status === '보류'),
-    idle:  open.filter(r => !r.prog.length && !isNew(r)),
+    alert: open.filter(r => r.age >= LONG_DAYS || r.overdue),
     hold:  open.filter(r => r.i.status === '보류').length,
   };
 }
@@ -1024,13 +1057,15 @@ const WK_MAIL = {
   sub:   'color:#5a6373;font-size:12px;margin:0 0 10px',
   sum:   'background:#eef3ff;border:1px solid #c9d8ff;border-radius:8px;padding:8px 12px;margin:0 0 14px;font-weight:600',
   sec:   'font-size:14px;font-weight:700;margin:16px 0 6px;border-bottom:2px solid #1f6feb;padding-bottom:3px',
-  grp:   'margin:6px 0 2px;font-weight:700',
-  li:    'margin:1px 0 1px 18px',
+  cust:  'font-size:13px;font-weight:700;padding:5px 8px;border:1px solid #b9c3d3;border-left:4px solid #1f6feb;background:#e8eef9',
+  new:   'font-size:11px;font-weight:700;color:#fff;background:#1f6feb;border-radius:4px;padding:0 4px',
   dim:   'color:#6b7688',
   red:   'color:#c62828;font-weight:700',
   table: 'border-collapse:collapse;width:100%;font-size:12px',
   th:    'background:#1f3b6e;color:#fff;padding:5px 6px;border:1px solid #b9c3d3;text-align:left;white-space:nowrap',
   td:    'padding:4px 6px;border:1px solid #b9c3d3;vertical-align:top',
+  tdn:   'padding:4px 6px;border:1px solid #b9c3d3;vertical-align:top;white-space:nowrap',
+  tdact:'padding:4px 6px;border:1px solid #b9c3d3;vertical-align:top;min-width:260px',
   trlong:'background:#fdecea',
   id:    'font-family:Consolas,monospace;white-space:nowrap',
 };
@@ -1041,64 +1076,167 @@ function wkHtml(D, mail) {
   const author = $('#wk-author').value.trim();
   const idTag = i => mail ? `<span ${A('id')}>${esc(i.id)}</span>`
     : `<button class="wk-id" data-issue="${esc(i.id)}">${esc(i.id)}</button>`;
-  const who = i => esc(i.customer || '고객사 미기재');
-  const line = (r, extra) => `<div ${A('li')}>${idTag(r.i)} ${who(r.i)} · ${esc(r.i.title)}${extra ? ' ' + extra : ''}</div>`;
-  const group = (icon, title, list, fn) => `<div ${A('grp')}>${icon} ${title} (${list.length})</div>` +
-    (list.length ? list.map(fn).join('') : `<div ${A('li')}><span ${A('dim')}>없음</span></div>`);
-
-  const why = r => [
-    r.age >= LONG_DAYS ? `${r.age}일째` : '',
-    r.i.status === '보류' ? '보류' : '',
-    r.overdue ? `목표일(${mmdd(r.i.dueDate)}) 지남 D+${daysBetween(r.i.dueDate, D.ref)}` : '',
-  ].filter(Boolean).join(' · ');
-
-  const changes =
-    group('🆕', '신규', D.news, r => line(r, `[${esc(r.i.severity || '보통')}]`)) +
-    group('🔄', '진행', D.moved, r => line(r, `<span ${A('dim')}>→ ${esc(r.prog.map(progLabel).join(' / '))}</span>`)) +
-    group('⚠', `장기(${LONG_DAYS}일↑)·지연·보류`, D.alert, r => line(r, `<span ${A('red')}>${esc(why(r))}</span>`)) +
-    (D.idle.length ? `<div ${A('grp')}>💤 이번주 진행 기록 없음 (${D.idle.length})</div><div ${A('li')}><span ${A('dim')}>${
-      D.idle.map(r => esc(r.i.id)).join(', ')}</span></div>` : '');
-
-  const cols = ['No', '이슈번호', '고객사', '장비', '제목', '중요도', '상태', '경과', '목표일', '다음주 계획'];
-  const table = D.open.length ? `<table ${A('table')}><thead><tr>${cols.map(c => `<th ${A('th')}>${c}</th>`).join('')}</tr></thead><tbody>${
-    D.open.map((r, n) => {
-      const i = r.i, long = r.age >= LONG_DAYS;
-      const td = (v, k) => `<td ${A(k || 'td')}>${v}</td>`;
-      return `<tr ${long ? A('trlong') : ''}>` +
-        td(n + 1) + td(idTag(i)) + td(who(i)) + td(esc(i.equipment || '-')) + td(esc(i.title)) +
-        td(`${SEV_ICON[i.severity] || ''}${esc(i.severity || '보통')}`) +
-        td(i.status === '보류' ? '⏸보류' : esc(i.status || '진행중')) +
-        td(long ? `<span ${A('red')}>${r.age}일</span>` : r.age + '일') +
-        td(i.dueDate ? (r.overdue ? `<span ${A('red')}>${mmdd(i.dueDate)}</span>` : mmdd(i.dueDate)) : '-') +
-        td(esc(i.nextPlan || '-')) + '</tr>';
-    }).join('')}</tbody></table>`
+  const cols = ['No', '이슈번호', '장비', '제목', '중요도', '상태', '경과', '조치 및 진행상황'];
+  const head = `<thead><tr>${cols.map(c => `<th ${A('th')}>${c}</th>`).join('')}</tr></thead>`;
+  let no = 0;                                              // 번호는 고객사를 넘어 이어 붙인다
+  const tr = r => {
+    const i = r.i, long = r.age >= LONG_DAYS;
+    const td = (v, k) => `<td ${A(k || 'td')}>${v}</td>`;
+    const isNew = D.news.includes(r) ? `<span ${A('new')}>신규</span> ` : '';
+    return `<tr ${long ? A('trlong') : ''}>` +
+      // 조치 및 진행상황만 줄바꿈하고, 나머지 칸은 모두 한 줄로 둔다
+      td(++no, 'tdn') + td(idTag(i), 'tdn') + td(esc(i.equipment || '-'), 'tdn') + td(isNew + esc(i.title), 'tdn') +
+      td(`${SEV_ICON[i.severity] || ''}${esc(i.severity || '보통')}`, 'tdn') +
+      td(i.status === '보류' ? '⏸보류' : esc(i.status || '진행중'), 'tdn') +
+      td(long ? `<span ${A('red')}>${r.age}일</span>` : r.age + '일', 'tdn') +
+      td(actHtml(r, A), 'tdact') + '</tr>';
+  };
+  const groups = wkByCustomer(D.open);
+  // 표 하나에 고객사 구분 줄을 끼워 넣는다 → 고객사가 달라도 칸 위치가 같다
+  const custRow = g => {
+    const late = g.list.filter(r => r.age >= LONG_DAYS || r.overdue).length;
+    return `<tr><td colspan="${cols.length}" ${A('cust')}>▶ ${esc(g.name)} <span ${A('dim')}>(${g.list.length}건${
+      late ? ` · <span ${A('red')}>장기/지연 ${late}</span>` : ''})</span></td></tr>`;
+  };
+  const body = groups.length
+    ? `<table ${A('table')}>${head}<tbody>${groups.map(g => custRow(g) + g.list.map(tr).join('')).join('')}</tbody></table>`
     : `<div ${A('dim')}>이 주 기준 미완료 이슈가 없습니다. 👍</div>`;
 
   return `<div ${A('wrap')}>
     <div ${A('h')}>■ 주간 미완료 이슈 보고 (${D.start} ~ ${mmdd(D.end)})</div>
     <div ${A('sub')}>${author ? '작성: ' + esc(author) + ' · ' : ''}작성일 ${ymd(new Date())}</div>
     <div ${A('sum')}>요약: 미완료 ${D.open.length}건 (진행중 ${D.open.length - D.hold} · 보류 ${D.hold})
-      · 이번주 신규 ${D.news.length} · 장기/지연 ${D.alert.length}</div>
-    <div ${A('sec')}>1. 이번주 변동</div>
-    ${changes}
-    <div ${A('sec')}>2. 미완료 이슈 현황 <span ${A('dim')}>(중요도 → 경과일 순, ${LONG_DAYS}일 이상은 빨간색)</span></div>
-    ${table}
+      · 고객사 ${groups.length}곳 · 장기/지연 ${D.alert.length}</div>
+    <div ${A('sec')}>미완료 이슈 현황 <span ${A('dim')}>(고객사별 · 중요도 → 경과일 순, ${LONG_DAYS}일 이상은 빨간색)</span></div>
+    ${body}
   </div>`;
 }
 
-// 메일 본문이 HTML 을 못 받을 때를 위한 글자판
-function wkText(D) {
+// 조치 및 진행상황 줄들: 진행 이력(날짜순, 이번주 것은 week=true). 이력이 없으면 "원인 및 결과" 글로 대신한다.
+function actLines(r) {
+  if (r.hist.length) return r.hist.map(p => ({ text: `${p.date ? mmdd(p.date) + ' ' : ''}${progLabel(p)}`, week: r.prog.includes(p) }));
+  const c = causeResultOf(r.i).trim();
+  return c ? [{ text: c, week: false }] : [];
+}
+function actHtml(r, A) {
+  const act = actLines(r);
+  if (!act.length) return `<span ${A('dim')}>기록 없음</span>`;
+  return act.map(a => {
+    const t = esc(a.text).replace(/\n/g, '<br>');
+    return a.week ? `<b>${t}</b>` : t;
+  }).join('<br>');
+}
+
+// 고객사별로 묶는다. 순서: 가장 급한 이슈의 중요도 → 건수 많은 순 → 이름. 미기재는 맨 뒤.
+// 묶음 안은 D.open 순서(중요도 → 경과일)를 그대로 쓴다.
+function wkByCustomer(open) {
+  const m = new Map();
+  open.forEach(r => {
+    const k = (r.i.customer || '').trim() || '고객사 미기재';
+    if (!m.has(k)) m.set(k, []);
+    m.get(k).push(r);
+  });
+  const top = list => Math.min(...list.map(r => SEV_ORDER[r.i.severity] ?? 2));
+  return [...m].map(([name, list]) => ({ name, list })).sort((a, b) =>
+    (a.name === '고객사 미기재') - (b.name === '고객사 미기재') ||
+    top(a.list) - top(b.list) || b.list.length - a.list.length || a.name.localeCompare(b.name, 'ko'));
+}
+
+/* ---------- Kyosan 미답변 재촉 메일 (일본어, 표만) ----------
+   주간보고와 같은 미완료 이슈를 일본어로: No · 装置 · 件名 · 経過 · 対応・進捗状況.
+   件名 = 진행 이력에 처음 올린 파일 이름(확장자 뺌, 보통 교산에 보낸 메일 제목). 없으면 이슈 제목을 번역.
+   한국어 글은 서버(/api/translate, Google 번역)로 옮기고, 실패하면 한국어 그대로 둔다. */
+const KY_COLS = ['No', '装置', '件名', '送付日', '対応・進捗状況'];
+
+// 고객사 영문명 (data/customers.json 의 en). ㈜·(주)·주식회사·띄어쓰기는 빼고 맞춘다. 없으면 원래 이름.
+const custKey = s => String(s || '').replace(/㈜|\(주\)|주식회사|\s/g, '').toLowerCase();
+const kyCust = name => {
+  const en = META.customersEn || {};
+  const hit = Object.keys(en).find(k => custKey(k) === custKey(name));
+  return hit ? en[hit] : name;
+};
+
+// 처음으로 메일(파일)을 올린 진행 이력 — 件名 과 送付日 이 여기서 나온다
+const kyFirstMail = r => r.hist.find(x => (x.files || []).length);
+// 送付日: 그 메일(.msg) 안에 적힌 보낸 시각(서버 /api/msgtimes)을 YYYY/MM/DD HH:mm 로.
+// .msg 가 아니거나 못 읽으면 진행 이력의 날짜만.
+const kySent = (r, times) => {
+  const p = kyFirstMail(r);
+  if (!p) return '-';
+  const iso = (times || {})[p.files[0].upload];
+  if (iso) {
+    const d = new Date(iso), z = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}/${z(d.getMonth() + 1)}/${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+  }
+  return p.date ? p.date.replace(/-/g, '/') : '-';
+};
+const kyFile = r => {
+  const p = kyFirstMail(r);
+  const f = p && p.files[0];
+  const name = f && (f.label || f.name || String(f.upload || '').split('/').pop());
+  return name ? name.replace(/\.[^.\s]{1,5}$/, '') : '';
+};
+// 조치 및 진행상황 줄: 날짜·첨부 수와 번역할 본문을 나눠 둔다
+const kyActs = r => r.hist.length
+  ? r.hist.map(p => ({ date: p.date ? mmdd(p.date) : '', body: p.text || '', files: (p.files || []).length, week: r.prog.includes(p) }))
+  : (causeResultOf(r.i).trim() ? [{ date: '', body: causeResultOf(r.i).trim(), files: 0, week: false }] : []);
+
+async function kyBuild() {
+  const D = wkData(), groups = wkByCustomer(D.open);
+  // 번역할 글 모으기 (같은 글은 한 번만)
+  const want = new Set();
+  D.open.forEach(r => { if (!kyFile(r)) want.add(r.i.title || ''); kyActs(r).forEach(a => want.add(a.body)); });
+  const src = [...want].filter(t => /[가-힣]/.test(t));
+  let ja = new Map(), failed = 0;
+  // 번역과 메일 보낸 시각 읽기를 함께 돌린다
+  const uploads = D.open.map(r => { const p = kyFirstMail(r); return p && p.files[0].upload; }).filter(Boolean);
+  const timesJob = uploads.length ? post('/api/msgtimes', { uploads }).then(j => j.times || {}).catch(() => ({})) : Promise.resolve({});
+  if (src.length) {
+    try {
+      const j = await post('/api/translate', { texts: src });
+      src.forEach((t, k) => ja.set(t, j.texts[k] || t));
+      failed = j.failed || 0;
+    } catch { failed = src.length; }
+  }
+  const times = await timesJob;
+  const sent = r => kySent(r, times);
+  const T = t => ja.get(t) || t;
+  const subject = r => kyFile(r) || T(r.i.title || '');
+  const actLine = a => [a.date, T(a.body), a.files ? `📎${a.files}` : ''].filter(Boolean).join(' ');
+
+  const A = k => wkAttr(true, k);
+  const head = `<thead><tr>${KY_COLS.map(c => `<th ${A('th')}>${c}</th>`).join('')}</tr></thead>`;
+  let no = 0;
+  const tr = r => {
+    const acts = kyActs(r);
+    const td = (v, k) => `<td ${A(k || 'td')}>${v}</td>`;
+    return '<tr>' +
+      td(++no, 'tdn') + td(esc(r.i.equipment || '-'), 'tdn') + td(esc(subject(r)), 'tdn') +
+      td(sent(r), 'tdn') +
+      td(acts.length ? acts.map(a => { const t = esc(actLine(a)).replace(/\n/g, '<br>'); return a.week ? `<b>${t}</b>` : t; }).join('<br>')
+        : `<span ${A('dim')}>記録なし</span>`, 'tdact') + '</tr>';
+  };
+  const body = groups.length
+    ? `<table ${A('table')}>${head}<tbody>${groups.map(g =>
+        `<tr><td colspan="${KY_COLS.length}" ${A('cust')}>▶ ${esc(kyCust(g.name))} <span ${A('dim')}>（${g.list.length}件）</span></td></tr>` +
+        g.list.map(tr).join('')).join('')}</tbody></table>`
+    : `<div ${A('dim')}>未完了の案件はありません。</div>`;
+  // 메일에는 표만 붙인다 (제목·작성일·건수 요약 없음)
+  const html = `<div ${A('wrap')}>${body}</div>`;
+
+  // 메일 본문이 HTML 을 못 받을 때를 위한 글자판
   const L = [];
-  const author = $('#wk-author').value.trim();
-  L.push(`■ 주간 미완료 이슈 보고 (${D.start} ~ ${mmdd(D.end)})${author ? '  작성: ' + author : ''}`);
-  L.push(`요약: 미완료 ${D.open.length}건 (진행중 ${D.open.length - D.hold} · 보류 ${D.hold}) · 신규 ${D.news.length} · 장기/지연 ${D.alert.length}`, '');
-  const g = (t, list, f) => { L.push(`${t} (${list.length})`); list.forEach(r => L.push('  ' + r.i.id + ' ' + (r.i.customer || '') + ' · ' + r.i.title + (f ? f(r) : ''))); };
-  g('[신규]', D.news);
-  g('[진행]', D.moved, r => ' → ' + r.prog.map(progLabel).join(' / '));
-  g('[장기·지연·보류]', D.alert, r => ` (${r.age}일${r.overdue ? ', 목표일 지남' : ''})`);
-  L.push('', '[미완료 현황]');
-  D.open.forEach((r, n) => L.push(`${n + 1}. ${r.i.id} | ${r.i.customer || '-'} | ${r.i.equipment || '-'} | ${r.i.title} | ${r.i.severity || '보통'} | ${r.i.status} | ${r.age}일 | 목표 ${r.i.dueDate || '-'} | 다음주: ${r.i.nextPlan || '-'}`));
-  return L.join('\n');
+  no = 0;
+  groups.forEach(g => {
+    if (L.length) L.push('');
+    L.push(`▶ ${kyCust(g.name)}（${g.list.length}件）`);
+    g.list.forEach(r => {
+      L.push(`${++no}. ${r.i.equipment || '-'} | ${subject(r)} | 送付日 ${sent(r)}`);
+      const acts = kyActs(r);
+      L.push(...(acts.length ? acts.map(a => `   - ${actLine(a).replace(/\s*\n\s*/g, ' ')}`) : ['   - 記録なし']));
+    });
+  });
+  return { html, text: L.join('\n'), failed };
 }
 
 function renderWeekly() {
@@ -1127,26 +1265,34 @@ $('#wk-print').onclick = () => {
 };
 window.addEventListener('afterprint', () => document.body.classList.remove('print-weekly'));
 
+// 번역을 기다리는 동안 클릭 효과가 끊기지 않게, 크롬은 Promise 를 그대로 클립보드에 넘긴다
 $('#wk-copy').onclick = async () => {
-  const D = wkData();
-  const html = wkHtml(D, true), text = wkText(D);
+  const btn = $('#wk-copy'), label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ 일본어로 번역 중…';
+  const job = kyBuild();
+  const done = r => toast(r.failed
+    ? `복사했습니다. 단, ${r.failed}개 문장은 번역하지 못해 한국어로 남았습니다 (인터넷 연결 확인).`
+    : '일본어로 복사했습니다. 메일 본문에 붙여넣기(Ctrl+V) 하세요.', !!r.failed);
   try {
     await navigator.clipboard.write([new ClipboardItem({
-      'text/html': new Blob([html], { type: 'text/html' }),
-      'text/plain': new Blob([text], { type: 'text/plain' }),
+      'text/html': job.then(r => new Blob([r.html], { type: 'text/html' })),
+      'text/plain': job.then(r => new Blob([r.text], { type: 'text/plain' })),
     })]);
-    toast('복사했습니다. 메일 본문에 붙여넣기(Ctrl+V) 하세요.');
+    done(await job);
   } catch {
     // http://<서버IP> 로 접속하면 브라우저가 클립보드 API 를 막는다 → 옛 방식으로
+    const r = await job;
     const tmp = document.createElement('div');
-    tmp.innerHTML = html;
+    tmp.innerHTML = r.html;
     tmp.style.cssText = 'position:fixed;left:-9999px;top:0;background:#fff';
     document.body.appendChild(tmp);
     const range = document.createRange(); range.selectNodeContents(tmp);
     const sel = getSelection(); sel.removeAllRanges(); sel.addRange(range);
     const ok = document.execCommand('copy');
     sel.removeAllRanges(); tmp.remove();
-    toast(ok ? '복사했습니다. 메일 본문에 붙여넣기(Ctrl+V) 하세요.' : '복사하지 못했습니다. 인쇄 / PDF 를 써 주세요.', !ok);
+    if (ok) done(r); else toast('복사하지 못했습니다. 다시 눌러 주세요.', true);
+  } finally {
+    btn.disabled = false; btn.textContent = label;
   }
 };
 

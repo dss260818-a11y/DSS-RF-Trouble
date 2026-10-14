@@ -464,7 +464,11 @@ button.danger:hover{background:var(--bad);color:#fff}
 .wk-table{border-collapse:collapse;width:100%;font-size:12.5px}
 .wk-th{background:var(--bg3);color:var(--fg2);text-align:left;padding:7px 8px;border-bottom:2px solid var(--line);white-space:nowrap;font-size:12px}
 .wk-td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.wk-tdn{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}
+.wk-tdact{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;min-width:260px;line-height:1.5}
 .wk-trlong{background:rgba(248,81,73,.09)}
+.wk-cust{font-size:13.5px;font-weight:700;padding:7px 10px;border-left:4px solid var(--acc);border-bottom:1px solid var(--line);background:var(--bg3)}
+.wk-new{font-size:11px;font-weight:700;color:#fff;background:var(--acc);border-radius:4px;padding:0 5px;margin-right:2px}
 
 @media print{
   body.print-weekly{background:#fff;color:#000}
@@ -479,6 +483,8 @@ button.danger:hover{background:var(--bad);color:#fff}
   body.print-weekly .wk-th{background:#1f3b6e;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   body.print-weekly .wk-trlong{background:#fdecea;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   body.print-weekly .wk-table tr{page-break-inside:avoid}
+  body.print-weekly .wk-cust{background:#e8eef9;border-left-color:#1f6feb;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body.print-weekly .wk-new{color:#fff;background:#1f6feb;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   @page{size:A4 landscape;margin:12mm}
 }
 /* ---------- 출장 일정 ---------- */
@@ -565,3 +571,5 @@ button.danger:hover{background:var(--bad);color:#fff}
   body.print-weekly .is-report{display:block}
   body.print-weekly .is-report .wk-table{font-size:10.5px}
 }
+.grid label .lbl-note{font-weight:400;color:var(--fg3);font-size:11.5px}
+.due-row>#f-new-tilde{flex:0 0 auto;align-self:center}
