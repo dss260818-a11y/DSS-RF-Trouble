@@ -9,6 +9,7 @@ const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 const { local, mapped } = require('./tools/paths');
 const { createAuth } = require('./tools/auth');
 const { readSsoConfig, createSso } = require('./tools/sso');
+const { headerView, logoutPlan } = require('./tools/header');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
 const { msgSentTime } = require('./tools/msg-date');
 
@@ -856,10 +857,17 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, { ok: true });
     }
     if (p === '/api/logout' && req.method === 'POST') {
-      // 시스템 목록 쿠키도 함께 지운다. 남겨 두면 공용 PC 에서 앞사람의 목록이
-      // 뒷사람 화면에 남는다.
-      res.setHeader('Set-Cookie', [AUTH.clearCookie(), AUTH.clearServicesCookie()]);
-      return send(res, 200, { ok: true });
+      // 끊는 범위와 지울 쿠키는 tools/header.js 가 정한다(시험이 거기 있다).
+      // 요약하면 — 세션 쿠키와 시스템 목록 쿠키를 늘 지우고, 통합 로그인으로
+      // 들어온 사람만 포털의 로그아웃 주소로 보낸다.
+      const plan = logoutPlan({ session: AUTH.session(req), issuer: SSO_CFG.issuer, auth: AUTH });
+      res.setHeader('Set-Cookie', plan.setCookies);
+      // 🔴 303 으로 되돌리지 않는다. 화면은 이 길을 fetch 로 부르는데(app.js),
+      //    fetch 는 리디렉션을 **제가** 따라가 버린다 — 포털의 로그아웃 주소를
+      //    브라우저가 아니라 스크립트가 받아 오게 되고, 다른 출처라 응답도
+      //    읽지 못한 채 사람은 그 자리에 그대로 남는다. 그래서 갈 곳만 알려
+      //    주고 옮기는 일은 화면에 맡긴다(A/S 는 <form> POST 라 303 이 맞다).
+      return send(res, 200, { ok: true, next: plan.next, sso: plan.sso });
     }
 
     /* ---- 통합 로그인 왕복 (포털이 꺼져 있으면 이 길 자체가 없다) ---- */
@@ -886,6 +894,22 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---- API ---- */
+    // 머리말이 무엇을 그릴지. 로그인 뒤에만 열린다(위 관문을 지난 자리다).
+    //
+    // 🔴 재료는 **로그인할 때 구워 둔 rfsvc 쿠키 하나**뿐이다. 포털에
+    //    이 목록을 다시 내어 주는 주소가 없어서, 관리자가 중간에 권한을 바꿔도
+    //    그 사람이 다시 로그인하기 전까지는 안 바뀐다(tools/header.js 머리말).
+    // 🔴 포털 주소는 설정(SSO_ISSUER)에서만 온다 — 코드에 박지 않는다.
+    if (p === '/api/header') {
+      return send(res, 200, headerView({
+        session: AUTH.session(req),
+        services: AUTH.services(req),
+        issuer: SSO_CFG.issuer,
+        currentServiceId: SSO_CFG.clientId,
+        loginEnabled: AUTH.enabled,
+      }));
+    }
+
     if (p === '/api/file' && (req.method === 'GET' || req.method === 'HEAD')) {
       return sendFile(req, res, Object.fromEntries(u.searchParams));
     }

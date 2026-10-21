@@ -1,6 +1,10 @@
 // 통합 로그인 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js
+//
+// 🔴 시험 파일을 더하면 **이 줄에도 적어라.** 이 저장소에는 시험 목록을 들고
+//    있는 설정 파일이 없어서(의존성 0개 · package.json 없음) 여기 적힌 명령이
+//    곧 등록이다 — 빠뜨리면 그 시험은 조용히 안 돈다.
 //
 // 🔴 포털에 이 시스템이 아직 등록되어 있지 않아 **진짜 왕복은 돌려 볼 수 없다.**
 //    그래서 "되는 경우" 보다 **막혀야 하는 경우**를 더 촘촘히 적어 둔다 —

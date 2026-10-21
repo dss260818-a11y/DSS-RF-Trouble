@@ -931,6 +931,12 @@ function autoRefreshText() {
 
 async function renderSettings() {
   $('#auth-row').hidden = !(META.caps && META.caps.auth);
+  // 들어온 길을 그대로 적는다. 통합 로그인으로 들어온 사람에게 "팀 비밀번호로
+  // 로그인되어 있습니다" 라고 적혀 있으면 틀린 말이고, 로그아웃이 포털까지
+  // 끊는다는 것도 눌러 보기 전에는 알 수 없다.
+  $('#auth-note').textContent = HEADER.sso
+    ? '통합 로그인으로 로그인되어 있습니다. 로그아웃하면 포털에서도 함께 로그아웃됩니다.'
+    : '팀 비밀번호로 로그인되어 있습니다.';
   if (!DESKTOP_OPEN()) { $('#btn-open-src').textContent = '원본 엑셀 내려받기'; $('#btn-open-base').textContent = '자료 폴더 경로 복사'; }
   $('#settings-info').innerHTML = `
     <dt>원본 엑셀</dt><dd>${esc(META.sourceExcel || '-')}</dd>
@@ -970,7 +976,112 @@ $('#btn-rebuild').onclick = async () => {
 
 $('#btn-open-src').onclick = () => openPath(META.sourceExcel, false, 'file');
 $('#btn-open-base').onclick = () => openPath(META.baseDir, false, 'folder');
-$('#btn-logout').onclick = async () => { try { await post('/api/logout'); } catch {} location.href = '/login.html'; };
+$('#btn-logout').onclick = doLogout;
+
+/* ========== 머리말 — 사내 시스템 오가기 · 통합 로그인으로 · 로그아웃 ========== */
+/*
+ * 🔴 **무엇을 그릴지 이 파일에서 정하지 않는다.** 여기 적은 if 는 아무도
+ *    돌려 볼 수 없다 — 이 저장소에는 브라우저를 띄우는 시험이 없다. 판단은
+ *    전부 tools/header.js 에 있고(그릴까 말까 · 어느 칸이 「지금 여기」인가 ·
+ *    로그아웃이 어느 길로 가는가) 거기에 시험이 붙어 있다. 이 아래는 서버가
+ *    준 것을 **그대로 그리는** 일만 한다.
+ *
+ * 🔴 목록은 로그인 시점에 굳는다. 재료가 로그인할 때 구워 둔 쿠키 하나뿐이라,
+ *    관리자가 중간에 권한을 바꿔도 다시 로그인하기 전까지는 안 바뀐다.
+ *    사내 시스템 여덟이 모두 같다(tools/header.js 머리말).
+ */
+let HEADER = {};
+
+function renderHeader(h) {
+  HEADER = h || {};
+  const box = $('#topbar-right');
+  const parts = [];
+
+  // 목록이 비면 드롭다운 자체를 그리지 않는다. 팀 비밀번호로 들어온 사람에게는
+  // 목록이 아예 없고, 빈 상자가 뜨면 "고장 났나" 로 읽힌다.
+  const list = HEADER.services || [];
+  if (list.length) {
+    const items = list.map(s => {
+      const icon = '<span class="svc-icon" aria-hidden="true">' + esc(s.icon || '🔗') + '</span>';
+      // 🔴 주소가 없는 칸이 지금 이 시스템이다 — 서버가 주소를 아예 안 보낸다.
+      //    여기서 "현재면 링크로 그리지 않기" 를 판단하는 것이 아니라, 그릴
+      //    재료가 없어서 못 그리는 것이다.
+      return s.url
+        ? '<li><a class="svc-item" href="' + esc(s.url) + '">' + icon + esc(s.name) + '</a></li>'
+        : '<li><span class="svc-item is-current" aria-current="page">' + icon + esc(s.name) +
+          '<em>지금 여기</em></span></li>';
+    }).join('');
+    // <details> 라서 펼치고 접는 일을 브라우저가 한다. 상태를 들지 않으니
+    // 스크립트가 늦게 붙어도 눌러서 건너갈 수 있다.
+    parts.push(
+      '<details class="svc" id="svc-menu">' +
+        '<summary class="hdr-btn" title="사내 시스템 오가기">사내 시스템</summary>' +
+        '<ul class="svc-list">' + items + '</ul>' +
+      '</details>');
+  }
+
+  // 🔴 주소는 서버가 설정(SSO_ISSUER)에서 읽어 준 것이다. 화면에 박지 않는다.
+  // 새 창으로 열지 않는다: 포털은 "다른 시스템으로 건너가는 자리" 라 보고 나면
+  // 그쪽에 머무는 곳이고, 새 창으로 띄우면 쓸모가 끝난 이 창이 뒤에 남아 쌓인다.
+  // 같은 창으로 가도 로그인은 끊기지 않으므로(세션 쿠키는 그대로다) 뒤로 가기
+  // 한 번이면 보던 화면으로 돌아온다.
+  if (HEADER.portalUrl) {
+    parts.push('<a class="hdr-btn" href="' + esc(HEADER.portalUrl) + '">통합 로그인으로</a>');
+  }
+
+  if (HEADER.logout) {
+    parts.push('<button type="button" class="hdr-btn" id="btn-logout-top">로그아웃</button>');
+  }
+
+  box.innerHTML = parts.join('');
+  box.hidden = !parts.length;
+  const out = $('#btn-logout-top');
+  if (out) out.onclick = doLogout;
+}
+
+async function initHeader() {
+  try {
+    renderHeader(await api('/api/header'));
+  } catch {
+    // 이 칸은 곁다리다. 못 받아 오면 안 그리고 끝낸다 — 머리말 하나 때문에
+    // 본문까지 못 보게 되면 안 된다(initAI 와 같은 태도).
+    renderHeader({});
+  }
+}
+
+// <details> 는 바깥을 눌러도, Esc 를 눌러도 저절로 접히지 않는다. 그 둘만
+// 얹는다 — 얹은 것이라 이 줄들이 없어도 펼침·접힘·링크는 그대로 돈다.
+document.addEventListener('click', e => {
+  const d = $('#svc-menu');
+  if (d && d.open && !d.contains(e.target)) d.open = false;
+});
+document.addEventListener('keydown', e => {
+  const d = $('#svc-menu');
+  if (e.key === 'Escape' && d && d.open) d.open = false;
+});
+
+/*
+ * 로그아웃.
+ *
+ * 🔴 **어디까지 끊을지 화면이 정하지 않는다.** 서버가 정해 갈 곳(next)만
+ *    알려 주고, 여기서는 그리로 옮기기만 한다 — 통합 로그인으로 들어온
+ *    사람이면 그 주소가 포털의 로그아웃 자리라 포털 세션까지 끊기고, 팀
+ *    비밀번호로 들어온 사람이면 이 시스템의 로그인 화면이다.
+ *
+ * 🔴 응답을 기다린 뒤에 옮긴다. 먼저 옮기면 쿠키를 지우라는 응답이 도착하기
+ *    전에 창이 떠나 이 시스템 세션만 살아남는다.
+ */
+async function doLogout() {
+  let next = '/login.html';
+  try {
+    const r = await post('/api/logout');
+    if (r && typeof r.next === 'string' && r.next) next = r.next;
+  } catch {
+    // 서버에 못 닿았으면 쿠키도 안 지워졌다. 로그인 화면으로 보내 다시 누를
+    // 수 있게 한다.
+  }
+  location.href = next;
+}
 
 /* ================= 시작 ================= */
 function fillCustomerList() {
@@ -1594,6 +1705,10 @@ $('#q').addEventListener('keydown', e => { if (e.key === 'Enter') doAsk(); });
 (async function init() {
   renderQuick();
   initVoice();
+  // 기다리지 않는다 — 머리말은 본문과 상관없이 혼자 그려지면 되고, 실패해도
+  // 그 칸만 안 그려진다(initAI 와 같은 태도). 이슈를 다 읽은 뒤로 미루면
+  // 눈이 가장 먼저 닿는 자리가 가장 늦게 채워진다.
+  initHeader();
   try {
     await refreshStats();
     await loadIssues();

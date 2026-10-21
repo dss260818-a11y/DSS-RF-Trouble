@@ -15,6 +15,11 @@
       <h1><span class="rf">RF</span> 기술이슈 관리 시스템</h1>
       <p id="stat-line">불러오는 중…</p>
     </div>
+    <!-- 사내 시스템 오가기 · 통합 로그인으로 · 로그아웃.
+         비어 있는 채로 시작해 /api/header 가 알려 준 것만 app.js 가 채운다
+         (renderHeader). 무엇을 그릴지는 전부 tools/header.js 가 정한다 —
+         여기서도 app.js 에서도 판단하지 않는다. -->
+    <div class="topbar-right" id="topbar-right" hidden></div>
   </div>
   <nav class="tabs">
     <button class="tab active" data-tab="search">통합검색</button>
@@ -143,7 +148,9 @@
     <h3>백업 / 저장 위치</h3>
     <div class="row" id="auth-row" hidden>
       <button id="btn-logout" class="ghost">로그아웃</button>
-      <span class="hint" style="margin:0">팀 비밀번호로 로그인되어 있습니다.</span>
+      <!-- 들어온 길에 따라 app.js 가 고쳐 쓴다 — 통합 로그인으로 들어왔으면
+           「포털에서도 함께 로그아웃된다」까지 알려야 한다. -->
+      <span id="auth-note" class="hint" style="margin:0">팀 비밀번호로 로그인되어 있습니다.</span>
     </div>
     <p class="hint">등록한 이슈는 <code id="data-path">data\issues.json</code> 에 저장됩니다.
        이 폴더를 공유폴더에 복사해 두면 팀원과 공유할 수 있습니다.</p>
