@@ -1,4 +1,5 @@
-// 포털이 **우리에게** 말을 거는 길 둘의 시험 — Node 에 들어 있는 시험 틀로 돈다.
+// 포털이 **우리에게** 말을 거는 길의 시험 — Node 에 들어 있는 시험 틀로 돈다.
+// 끊어라 신호 · 알림 내주기 · 알림 설정(읽기 · 저장) 셋이다.
 //
 //   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js tools/portal.test.js
 //
@@ -7,13 +8,14 @@
 //    곧 등록이다 — 빠뜨리면 그 시험은 조용히 안 돈다.
 //
 // ── 🔴 이 조각은 「막아야 하는 경우」가 전부다 ─────────────────────────────
-// 두 창구 모두 **인증 없이 누구나 두드릴 수 있고**, 서명 검증이 유일한 문지기다.
+// 창구 모두 **인증 없이 누구나 두드릴 수 있고**, 서명 검증이 유일한 문지기다.
 // 그래서 「되는 경우」는 몇 줄이고 나머지는 전부 막혀야 하는 경우다:
 //
 //   서명이 없거나 틀린 토큰 · 알고리즘 바꿔치기(none · 대칭키) · 남의 열쇠 ·
 //   다른 발급자 · 남에게 발급된 토큰 · 만료 · nonce 가 든 토큰(신분 토큰
-//   되쓰기) · 로그아웃 표시가 없는 토큰 · **두 창구에 서로의 토큰을 내미는 것** ·
-//   자격을 아예 안 보낸 경우 · 수명이 너무 긴 토큰
+//   되쓰기) · 로그아웃 표시가 없는 토큰 · **창구에 서로의 토큰을 내미는 것**
+//   (용도가 다른 서비스 토큰도 포함이다) · 자격을 아예 안 보낸 경우 ·
+//   수명이 너무 긴 토큰
 //
 // 🔴 포털에 이 시스템이 아직 등록되어 있지 않아 **진짜 왕복은 돌려 볼 수 없다.**
 //    그래서 포털이 굽는 모양(dss-auth 의 logout-token.ts · service-token.ts)을
@@ -31,8 +33,8 @@ const path = require('path');
 
 const {
   createPortalGateway, verifyLogoutToken, verifyServiceToken,
-  readBearerToken, readLogoutToken, toRow,
-  LOGOUT_EVENT, LOGOUT_PATH, NOTIFICATIONS_PATH,
+  readBearerToken, readLogoutToken, toRow, mySettings, NOTHING_TO_SAVE,
+  LOGOUT_EVENT, LOGOUT_PATH, NOTIFICATIONS_PATH, NOTIFICATION_SETTINGS_PATH,
   PORTAL_TOKEN_PURPOSES, PORTAL_TOKEN_MAX_LIFETIME_SEC,
 } = require('./portal');
 const { createRevocations } = require('./revoked');
@@ -625,6 +627,199 @@ test('🔴 통합 로그인이 꺼져 있으면 창구 자체가 없다 (404)', 
   const { portal } = gateway({ config: { ...CFG, enabled: false } });
   const res = await portal.notifications(bearer(makeJwt(serviceClaims())));
   assert.equal(res.status, 404);
+});
+
+/* ======================================================================== */
+/* ③ 알림 설정 통로 — 읽기는 빈 표, 저장은 거절                              */
+/* ======================================================================== */
+//
+// 🔴 포털은 등록된 시스템마다 **두 주소를 다 두드린다.** 알림 통로만 열어 두면
+//    설정 통로가 404 가 되고, 포털은 404 를 「죽었다」와 구별하지 못해 [알림
+//    설정] 화면에 경고를 그린다 — 멀쩡한데 고장으로 보인다.
+// 🔴 내주는 모양은 **포털의 parseSettingsPayload 가 정한다**(dss-auth 의
+//    notifications/settings.ts). 한 줄이라도 어긋나면 저쪽은 그 시스템 전체를
+//    버린다. 그래서 여기서 모양을 못 박는다.
+
+/** 설정 읽기·저장용 토큰. 용도만 갈아 끼운 서비스 토큰이다. */
+const settingsRead = over =>
+  makeJwt(serviceClaims({ purpose: PORTAL_TOKEN_PURPOSES.notificationSettingsRead, ...over }));
+const settingsWrite = over =>
+  makeJwt(serviceClaims({ purpose: PORTAL_TOKEN_PURPOSES.notificationSettingsWrite, ...over }));
+
+test('바른 설정 읽기 토큰이면 빈 표를 돌려준다 (내줄 알림 종류가 없다)', async () => {
+  const { portal } = gateway();
+  const res = await portal.notificationSettings(bearer(settingsRead()));
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { roles: [], kinds: [] });
+  assert.equal(res.headers['cache-control'], 'no-store');
+});
+
+test('🔴 빈 표는 포털의 parseSettingsPayload 가 읽을 수 있는 모양이다', () => {
+  // 저쪽은 roles · kinds 가 **둘 다 배열**일 때만 읽는다. 하나라도 없거나
+  // 배열이 아니면 그 시스템 전체를 「설정을 읽을 수 없다」로 버린다.
+  const body = mySettings();
+  assert.deepEqual(Object.keys(body).sort(), ['kinds', 'roles']);
+  assert.ok(Array.isArray(body.roles));
+  assert.ok(Array.isArray(body.kinds));
+});
+
+test('🔴 없는 알림 종류를 지어내지 않는다 (빈 것이 사실이다)', async () => {
+  // 가짜 줄을 내주면 포털 화면에 끌 수 있는 것처럼 보이는 줄이 생기고,
+  // 꺼도 아무 일이 일어나지 않는다 — 오류가 안 나는 고장이다.
+  const { portal } = gateway();
+  const res = await portal.notificationSettings(bearer(settingsRead()));
+  assert.equal(res.body.kinds.length, 0);
+  assert.equal(res.body.roles.length, 0);
+});
+
+test('🔴 저장은 거절한다 — 저장할 곳이 없다 (403 · 사람이 읽을 한 문장)', async () => {
+  const { portal } = gateway();
+  const res = await portal.saveNotificationSettings(bearer(settingsWrite()));
+  assert.equal(res.status, 403, '포털은 403 만 「고장이 아닌 답」으로 받아 이 글을 그린다');
+  assert.equal(res.body.error, 'forbidden');
+  // 🔴 포털이 이 글자를 그대로 그린다(저쪽 messageFrom).
+  assert.equal(res.body.message, NOTHING_TO_SAVE);
+  assert.ok(res.body.message.length > 0);
+  assert.equal(res.headers['cache-control'], 'no-store');
+});
+
+test('🔴 보낸 본문이 무엇이든 거절은 같다 (읽지 않는다)', async () => {
+  const { portal } = gateway();
+  // 창구는 본문을 받지도 않는다 — 자격을 보기 전에 남이 보낸 바이트를 쌓지
+  // 않기 위해서다(server.js 가 이 길에 textBody 를 붙이지 않았다).
+  const a = await portal.saveNotificationSettings(bearer(settingsWrite()));
+  const b = await portal.saveNotificationSettings({
+    authorization: 'Bearer ' + settingsWrite(), body: '{"changes":[{"kind":"X","enabled":false,"roles":{}}]}',
+  });
+  assert.deepEqual(a.body, b.body);
+  assert.equal(b.status, 403);
+});
+
+/* ── 🔴 ③ 막아야 하는 경우 ─────────────────────────────────────────────── */
+
+test('🔴 자격을 아예 안 보내면 설정도 못 읽는다', async () => {
+  const { portal } = gateway();
+  const res = await portal.notificationSettings({});
+  assert.equal(res.status, 401);
+  assert.deepEqual(res.body, { error: 'invalid_token' });
+  assert.equal(res.headers['www-authenticate'], 'Bearer');
+});
+
+test('🔴 자격 없는 저장은 403 이 아니라 401 이다 (거절 사유는 통과한 뒤의 일)', async () => {
+  // 🔴 순서가 뒤집히면 자격도 없는 사람이 「이 시스템에는 설정이 없다」를
+  //    알게 된다. 적은 것 같아도 시스템 속사정이다.
+  const { portal } = gateway();
+  const res = await portal.saveNotificationSettings({});
+  assert.equal(res.status, 401);
+  assert.deepEqual(res.body, { error: 'invalid_token' });
+  assert.equal(res.headers['www-authenticate'], 'Bearer');
+});
+
+test('🔴 알림 읽기용 토큰으로 설정을 읽을 수 없다 (용도가 다르다)', async () => {
+  const { portal } = gateway();
+  const res = await portal.notificationSettings(bearer(makeJwt(serviceClaims())));
+  assert.equal(res.status, 401);
+  assert.deepEqual(res.body, { error: 'invalid_token' });
+});
+
+test('🔴 설정 읽기 토큰으로 저장에 닿을 수 없다 (최소 권한)', async () => {
+  const { portal } = gateway();
+  const res = await portal.saveNotificationSettings(bearer(settingsRead()));
+  assert.equal(res.status, 401);
+});
+
+test('🔴 설정 쓰기 토큰으로 설정을 읽을 수도 없다 (반대 방향도 막힌다)', async () => {
+  const { portal } = gateway();
+  const res = await portal.notificationSettings(bearer(settingsWrite()));
+  assert.equal(res.status, 401);
+});
+
+test('🔴 설정 토큰으로 알림을 볼 수 없다 (세 용도가 서로 막힌다)', async () => {
+  const { portal } = gateway();
+  assert.equal((await portal.notifications(bearer(settingsRead()))).status, 401);
+  assert.equal((await portal.notifications(bearer(settingsWrite()))).status, 401);
+});
+
+test('🔴 끊어라 토큰을 설정 창구에 내밀면 거절한다', async () => {
+  const { portal } = gateway();
+  assert.equal((await portal.notificationSettings(bearer(makeJwt(logoutClaims())))).status, 401);
+  assert.equal((await portal.saveNotificationSettings(bearer(makeJwt(logoutClaims())))).status, 401);
+});
+
+test('🔴 설정 창구도 서명 · 발급자 · 수신자 · 만료 · nonce 를 똑같이 본다', async () => {
+  const t = nowSec();
+  const { portal } = gateway();
+  const bad = [
+    settingsRead({ iss: 'http://evil.example.test' }),
+    settingsRead({ aud: 'dss-some-other' }),
+    settingsRead({ nonce: 'nonce-from-a-login-0001' }),
+    settingsRead({ iat: t - 600, exp: t - 300 }),
+    settingsRead({ iat: t, exp: t + PORTAL_TOKEN_MAX_LIFETIME_SEC + 1 }),
+    makeJwt(serviceClaims({ purpose: PORTAL_TOKEN_PURPOSES.notificationSettingsRead }),
+      { privateKey: OTHER.privateKey }),
+  ];
+  for (const token of bad) {
+    const res = await portal.notificationSettings(bearer(token));
+    assert.equal(res.status, 401);
+    // 🔴 거절 사유는 밖으로 나가지 않는다 — 전부 같은 한 마디다.
+    assert.deepEqual(res.body, { error: 'invalid_token' });
+  }
+});
+
+test('🔴 설정 통로의 답에도 기록에도 비밀값이 없다', async () => {
+  // 🔴 createPortalGateway 는 readSsoConfig 의 결과를 통째로 받는다 — 거기에
+  //    SSO_CLIENT_SECRET 이 들어 있다. 이 파일은 그 값을 쓰지 않지만, 쓰지
+  //    않는다는 것은 **글자를 읽어** 확인해야 한다(tools/notify.test.js 와 같다).
+  const SECRET = 'fake-client-secret';   // 가짜다. 진짜 값은 설정(.env)에만 있다.
+  const lines = [];
+  const { portal } = gateway({
+    config: { ...CFG, clientSecret: SECRET },
+    extra: { log: s => lines.push(String(s)) },
+  });
+
+  const token = settingsRead();
+  const answers = [
+    await portal.notificationSettings(bearer(token)),
+    await portal.saveNotificationSettings(bearer(settingsWrite())),
+    await portal.notificationSettings({}),                         // 거절
+    await portal.saveNotificationSettings(bearer(makeJwt(logoutClaims()))), // 거절
+  ];
+
+  for (const res of answers) {
+    const out = JSON.stringify(res);
+    assert.ok(!out.includes(SECRET), '답에 비밀값이 들어갔다: ' + out);
+    assert.ok(!out.includes(token), '답에 토큰이 되돌아 나갔다: ' + out);
+    assert.ok(!out.includes(SUB), '답에 사람 번호가 들어갔다: ' + out);
+    assert.ok(!out.includes(CFG.jwksUrl), '답에 안쪽 주소가 들어갔다: ' + out);
+  }
+
+  assert.ok(lines.length, '거절은 기록에 남아야 한다');
+  for (const line of lines) {
+    assert.ok(!line.includes(SECRET), '기록에 비밀값이 들어갔다: ' + line);
+    assert.ok(!line.includes(SUB), '기록에 사람 번호가 들어갔다: ' + line);
+    assert.ok(!line.includes(token), '기록에 토큰이 들어갔다: ' + line);
+  }
+});
+
+test('🔴 통합 로그인이 꺼져 있으면 설정 창구도 없다 (404)', async () => {
+  const { portal } = gateway({ config: { ...CFG, enabled: false } });
+  assert.equal((await portal.notificationSettings(bearer(settingsRead()))).status, 404);
+  assert.equal((await portal.saveNotificationSettings(bearer(settingsWrite()))).status, 404);
+});
+
+test('🔴 설정 통로의 주소는 포털이 두드리는 글자 그대로다', () => {
+  const { entryPlan } = require('./auth');
+  // 🔴 이름을 우리가 정할 수 없다 — 포털의 notifications/sources.ts 가 등록된
+  //    모든 시스템에 이 **같은 경로**를 두드린다. 한 글자만 달라도 404 이고,
+  //    증상은 포털 화면의 경고 한 줄뿐이다.
+  assert.equal(NOTIFICATION_SETTINGS_PATH, '/api/integration/notification-settings');
+  // 🔴 알림 통로와 **달라야 한다.** 같으면 읽기 토큰이 설정 통로를 두드린다.
+  assert.notEqual(NOTIFICATION_SETTINGS_PATH, NOTIFICATIONS_PATH);
+  // 관문보다 **위**에서 처리한다(server.js) — 아래까지 내려오면 401 이 된다.
+  assert.equal(
+    entryPlan({ enabled: true, pathname: NOTIFICATION_SETTINGS_PATH, search: '', loggedIn: false }).json401,
+    true
+  );
 });
 
 /* ======================================================================== */

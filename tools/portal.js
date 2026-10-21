@@ -1,21 +1,26 @@
-// 포털(dss-auth)이 **우리에게** 말을 거는 길 둘.
+// 포털(dss-auth)이 **우리에게** 말을 거는 길 — 끊어라 신호 · 알림 · 알림 설정.
+//
+// 🔴 주소는 셋이 아니라 **셋 중 둘이 포털의 「알림 통로」 한 쌍**이다. 포털은
+//    등록된 시스템마다 `/api/integration/notifications` 와
+//    `/api/integration/notification-settings` 를 **둘 다** 두드린다 — 한쪽만
+//    열면 저쪽 [알림 설정] 화면에 경고가 뜬다(2026-10-22, 아래 상수 주석).
 //
 // ── 🔴 방향이 반대고 자격도 다르다. 섞으면 한쪽이 조용히 401 이 된다 ───────
 // 지금까지 포털과 오간 길은 전부 **우리가 묻는** 쪽이었다:
 //   · tools/sso.js    로그인 왕복 — 우리 client_secret 으로 코드를 토큰으로 바꾼다
 //   · tools/notify.js 알림 받아오기 — 우리 client_secret 을 Basic 머리말에 싣는다
-// 이 파일의 둘은 **반대 방향**이다. 포털이 제 열쇠로 서명한 토큰을 들고 우리에게
-// 오고, 우리는 포털의 **공개키로 검증만** 한다.
+// 이 파일의 창구들은 **반대 방향**이다. 포털이 제 열쇠로 서명한 토큰을 들고
+// 우리에게 오고, 우리는 포털의 **공개키로 검증만** 한다.
 //
 // 🔴 **우리 비밀값(SSO_CLIENT_SECRET)은 이 파일에 한 글자도 없다.** 여기서
 //    비밀값을 보기 시작하면 그것은 저쪽 길의 자격이고, 섞인 자리는 평소에
 //    아무 일이 없다가 한쪽만 조용히 막힌다.
 //
-// ── 🔴 둘 다 「인증 없이 열리는 창구」다 ───────────────────────────────────
-// 백채널 로그아웃에는 자격이 **아예 없고**, 알림 통로의 자격은 토큰 하나다.
-// 누구나 두드릴 수 있다. **서명 검증이 유일한 문지기다** — 빠뜨리면 아무나
-// 아무 사람이나 로그아웃시키고(업무 중인 사람을 계속 튕겨내는 것만으로 충분히
-// 성가신 공격이다), 아무나 남의 알림을 꺼내 볼 수 있는 구멍이 된다.
+// ── 🔴 전부 「인증 없이 열리는 창구」다 ────────────────────────────────────
+// 백채널 로그아웃에는 자격이 **아예 없고**, 알림·설정 통로의 자격은 토큰
+// 하나다. 누구나 두드릴 수 있다. **서명 검증이 유일한 문지기다** — 빠뜨리면
+// 아무나 아무 사람이나 로그아웃시키고(업무 중인 사람을 계속 튕겨내는 것만으로
+// 충분히 성가신 공격이다), 아무나 남의 알림을 꺼내 볼 수 있는 구멍이 된다.
 //
 // ── 🔴 두 토큰은 서로의 통로에서 거절되어야 한다 ───────────────────────────
 // 둘 다 포털이 RS256 으로 서명한 토큰이고, 서명 · 발급자 · 수신자 · 만료를
@@ -28,10 +33,14 @@
 // 그래서 한쪽 통로에 다른 쪽 토큰을 내밀면 막힌다(아래 verify* 두 개). 이것을
 // 안 보면 「알림을 읽으려고 구운 토큰으로 남을 로그아웃시키는」 길이 열린다.
 //
+// 🔴 서비스 토큰끼리도 **용도(purpose)로 한 번 더 갈린다.** 알림을 읽으려고
+//    구운 토큰으로 설정을 읽을 수 없고, 설정을 읽으려고 구운 토큰으로 저장에
+//    닿을 수 없다. 아래 admit 이 통로마다 다른 용도를 요구하는 자리다.
+//
 // ── 판단을 server.js 에 두지 않는다 ────────────────────────────────────────
 // tools/auth.js 의 entryPlan · tools/header.js 와 같은 까닭이다. 요청 처리
 // 한가운데 적은 if 는 서버를 띄워야만 돌려 볼 수 있어서, **막아야 하는 경우**를
-// 시험으로 물을 수 없다. 아래 두 handler 는 `{ status, headers, body }` 를
+// 시험으로 물을 수 없다. 아래 handler 들은 `{ status, headers, body }` 를
 // 돌려주기만 하고 server.js 는 그대로 적는다.
 
 const { verifyToken } = require('./jwt');
@@ -55,9 +64,14 @@ const LOGOUT_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
  *    저장소가 둘이라 아무도 잡아 주지 못하는 자리다 — 고칠 때는 함께.
  */
 const PORTAL_TOKEN_PURPOSES = {
-  /** 「이 사람의 지금 알림」 읽기. 지금 우리가 여는 통로는 이것 하나다. */
+  /** 「이 사람의 지금 알림」 읽기. */
   notificationsRead: 'dss.notifications.read',
-  /** 알림 설정 읽기 · 저장. 🔵 아직 통로를 열지 않았다(아래 NOTIFICATIONS_PATH 주석). */
+  /**
+   * 알림 설정 읽기 · 저장. 🔴 **읽기와 쓰기가 한 주소**(아래
+   * NOTIFICATION_SETTINGS_PATH)이고, 둘을 가르는 것은 이 용도뿐이다 — 읽으려고
+   * 구운 토큰이 저장에 닿으면 안 되고, 알림을 읽으려고 구운 토큰은 설정 자체에
+   * 닿으면 안 된다. 셋이 전부 다른 글자인 까닭이 그것이다.
+   */
   notificationSettingsRead: 'dss.notification-settings.read',
   notificationSettingsWrite: 'dss.notification-settings.write',
 };
@@ -94,11 +108,28 @@ const LOGOUT_PATH = '/api/sso/backchannel-logout';
  *    두드린다(dss-auth 의 notifications/sources.ts — 네 시스템이 모두 이 경로다).
  *    그래서 A/S · 개선요청과 글자 하나까지 같다.
  *
- * 🔵 포털은 설정 통로(`/api/integration/notification-settings`)도 함께 안다.
- *    우리는 **아직 열지 않았다** — 이 시스템에는 끌 알림 자체가 없어서 설정할
- *    것이 없다. 제 알림이 생기는 날 그 통로도 함께 연다.
+ * 🔵 설정 통로는 아래 NOTIFICATION_SETTINGS_PATH 다. **둘 다 있어야 한다** —
+ *    포털은 등록된 시스템마다 두 주소를 모두 두드린다.
  */
 const NOTIFICATIONS_PATH = '/api/integration/notifications';
+
+/**
+ * 포털이 알림 **설정**을 읽고(GET) 저장하러(PUT) 오는 주소.
+ *
+ * 🔴 이 이름도 우리가 정할 수 없다(위와 같은 까닭). 포털은 등록된 시스템마다
+ *    같은 두 경로를 두드린다 — 한 글자만 달라도 404 다.
+ *
+ * ── 🔴 2026-10-22, 「제 알림이 생기는 날」을 기다리지 않고 열었다 ──────────
+ * 위 주석은 오래 「이 시스템에는 끌 알림이 없으니 제 알림이 생기는 날 함께
+ * 연다」고 적혀 있었다. 그런데 포털에 **등록되는 순간** 포털은 이 주소도
+ * 두드리기 시작하고, 없으면 404 가 돌아간다. 포털은 404 를 「죽었다」와
+ * 구별하지 못해(dss-auth 의 gather.ts) [알림 설정] 화면에 「지금은 이 시스템의
+ * 설정을 불러올 수 없습니다」라는 경고를 그린다 — 멀쩡한데 고장으로 보인다.
+ *
+ * 그래서 등록과 **같은 조각에서** 연다. 내줄 것은 빈 표이고(아래 mySettings),
+ * 빈 표는 거짓말이 아니라 사실이다.
+ */
+const NOTIFICATION_SETTINGS_PATH = '/api/integration/notification-settings';
 
 /* ================= 자격을 꺼내는 두 자리 ================= */
 
@@ -285,7 +316,44 @@ function feedFor(sub) {
   return { items, count: items.length };
 }
 
-/* ================= 창구 둘 ================= */
+/* ================= 🔵 내줄 알림 설정 — 지금은 빈 표다 ================= */
+
+/**
+ * 포털이 기대하는 설정의 모양. 🔴 **역할도 종류도 빈 목록이다.**
+ *
+ * 이 시스템에는 제 알림이 없다(위 myNotifications). 끌 것이 없으니 켜고 끌
+ * 표도 없다 — 포털은 이 경우를 이미 곱게 그린다(「이 시스템이 내주는 알림
+ * 종류가 없습니다」, dss-auth 의 admin/notifications/page.tsx).
+ *
+ * 🔴 **없는 종류를 지어내지 마라.** 포털 화면에 가짜 줄이 생기고, 사람이 그것을
+ *    끄면 아무 일도 일어나지 않는다. 오류가 안 나는 고장이라 아무도 신고하지
+ *    않는다 — 알림 줄의 toRow 가 막으려는 것과 같은 종류다.
+ *
+ * 🔵 알림이 생기는 날 **여기가 그 표가 된다.** 칸 이름은 우리가 정하지 않고
+ *    포털의 parseSettingsPayload 가 정한다(dss-auth 의 notifications/settings.ts):
+ *
+ *      roles: [{ code, label, editable }]
+ *      kinds: [{ kind, label, description, enabled, defaultEnabled,
+ *                roles: { <role.code>: { receives, defaultReceives } } }]
+ *
+ *    🔴 한 줄이라도 모양이 어긋나면 포털은 **그 시스템 전체를** 버리고
+ *    「설정을 읽을 수 없습니다」로 적는다. 반쪽짜리 표를 그리지 않으려는
+ *    저쪽 규칙이다.
+ */
+function mySettings() {
+  return { roles: [], kinds: [] };
+}
+
+/**
+ * 저장을 거절할 때 **사람에게 보일 한 문장.**
+ *
+ * 🔴 포털이 이 글자를 그대로 그린다(저쪽 messageFrom → `{시스템 이름} — {이 글}`).
+ *    그래서 거친 낱말이 아니라 사람의 말이어야 한다. 밖으로 나가는 글이므로
+ *    안쪽 사정(표 이름 · 설정 이름)을 적지 않는다.
+ */
+const NOTHING_TO_SAVE = '이 시스템에는 켜고 끌 알림이 없어 저장할 것이 없습니다.';
+
+/* ================= 창구 — 끊어라 · 알림 · 알림 설정(읽기 · 저장) ================= */
 
 /** 이 응답이 캐시되면 다음 통보가 서버에 닿지 않고 캐시로 처리될 수 있다. */
 const NO_STORE = { 'cache-control': 'no-store' };
@@ -297,8 +365,8 @@ const NO_STORE = { 'cache-control': 'no-store' };
  *   revocations  끊긴 사람 명부(tools/revoked.js). 끊어라 신호가 여기에 적힌다.
  *   jwks         시험에서 열쇠를 끼워 넣는 자리. 기본은 포털의 JWKS 를 받아 두는 것.
  *
- * 🔴 **포털이 꺼져 있으면 두 창구도 없다**(404). 포털이 없으면 포털의 서명도
- *    없고, 검증할 수 없는 창구를 열어 둘 까닭이 없다.
+ * 🔴 **포털이 꺼져 있으면 창구가 하나도 없다**(404). 포털이 없으면 포털의
+ *    서명도 없고, 검증할 수 없는 창구를 열어 둘 까닭이 없다.
  */
 function createPortalGateway({ config, revocations, jwks, fetchImpl, now = Date.now, log = console.error } = {}) {
   const cfg = config || {};
@@ -360,6 +428,38 @@ function createPortalGateway({ config, revocations, jwks, fetchImpl, now = Date.
   }
 
   /**
+   * 🔴 포털이 묻는 세 창구의 **공통 문지기.** 통과하면 `{ sub }`, 막히면
+   * `{ denied }` 에 그대로 내보낼 401 계획이 담겨 온다.
+   *
+   * 한 자리에 모은 까닭은 verify* 두 개가 tools/jwt.js 를 빌려 쓰는 것과 같다 —
+   * 통로마다 베껴 적으면 그중 하나는 반드시 덜 검토되고, 덜 검토된 쪽이
+   * 열려 있는 문이 된다. 통로마다 다른 것은 **용도 하나뿐**이다.
+   */
+  async function admit(authorization, purpose) {
+    const v = await verifyServiceToken({
+      token: readBearerToken(authorization),
+      resolveKey,
+      issuer: cfg.issuer,
+      audience: cfg.clientId,
+      purpose,
+      now: now(),
+    });
+    if (v.ok) return { sub: v.sub };
+
+    // 🔴 왜 거절했는지는 밖으로 내보내지 않는다 — 맞혀 가며 두드릴 실마리가
+    //    된다(위 backchannelLogout 과 같다). 까닭은 서버 기록에만 남는다.
+    log('[portal] 서비스 토큰 거절: ' + v.code);
+    return {
+      denied: {
+        status: 401,
+        // 규격이 정한 머리말. 부르는 쪽이 「자격이 필요하다」를 알아볼 자리다.
+        headers: { ...NO_STORE, 'www-authenticate': 'Bearer' },
+        body: { error: 'invalid_token' },
+      },
+    };
+  }
+
+  /**
    * 내 알림을 내주는 통로.
    *
    * 🔴 **누구의 알림인지는 토큰 안의 sub 에서만 온다.** 쿼리를 읽지 않는다.
@@ -367,34 +467,69 @@ function createPortalGateway({ config, revocations, jwks, fetchImpl, now = Date.
   async function notifications({ authorization } = {}) {
     if (!enabled) return off();
 
-    const v = await verifyServiceToken({
-      token: readBearerToken(authorization),
-      resolveKey,
-      issuer: cfg.issuer,
-      audience: cfg.clientId,
-      purpose: PORTAL_TOKEN_PURPOSES.notificationsRead,
-      now: now(),
-    });
-    if (!v.ok) {
-      log('[portal] 서비스 토큰 거절: ' + v.code);
-      return {
-        status: 401,
-        // 규격이 정한 머리말. 부르는 쪽이 「자격이 필요하다」를 알아볼 자리다.
-        headers: { ...NO_STORE, 'www-authenticate': 'Bearer' },
-        body: { error: 'invalid_token' },
-      };
-    }
+    const who = await admit(authorization, PORTAL_TOKEN_PURPOSES.notificationsRead);
+    if (who.denied) return who.denied;
 
-    return { status: 200, headers: { ...NO_STORE }, body: feedFor(v.sub) };
+    return { status: 200, headers: { ...NO_STORE }, body: feedFor(who.sub) };
+  }
+
+  /**
+   * 알림 설정을 내주는 통로(GET).
+   *
+   * 🔴 **알림 읽기용 토큰으로는 들어올 수 없다.** 용도가 다른 토큰은 admit 이
+   *    막는다 — 최소 권한이란 그 말이다.
+   *
+   * 🔵 sub 를 받아 두지 않는 까닭: 내줄 표가 사람마다 다르지 않기 때문이다.
+   *    지금은 누구에게나 빈 표다. 알림이 생겨 표가 생기면 그때는 sub 가
+   *    필요해진다(그 사람의 역할로 잠글 칸이 생긴다).
+   */
+  async function notificationSettings({ authorization } = {}) {
+    if (!enabled) return off();
+
+    const who = await admit(authorization, PORTAL_TOKEN_PURPOSES.notificationSettingsRead);
+    if (who.denied) return who.denied;
+
+    return { status: 200, headers: { ...NO_STORE }, body: mySettings() };
+  }
+
+  /**
+   * 🔴 알림 설정 저장(PUT) — **거절한다.** 저장할 곳이 없다.
+   *
+   * 403 인 까닭: 포털에 붙은 다른 시스템들이 같은 자리에서 쓰는 답이고
+   * (dss-auth 의 actions/notification-settings.ts 머리말 — 「나머지 넷은 저장을
+   * 403 으로 거절한다」), 포털은 403 을 **고장이 아닌 정상 응답**으로 받아
+   * 우리가 보낸 문장을 그대로 그린다. 500·404 로 답하면 같은 화면이 「포털이
+   * 그 시스템에 닿지 못했다」로 바뀐다 — 사실이 아니다.
+   *
+   * 🔴 **자격을 먼저 본다.** 자격 없는 사람에게는 「저장할 것이 없다」조차
+   *    알려 주지 않는다. 그리고 거절 사유를 아는 것은 통과한 뒤의 일이다.
+   * 🔴 **본문을 읽지 않는다.** 무엇을 보내 왔든 저장할 곳이 없고, 읽으면 자격을
+   *    보기도 전에 남이 보낸 바이트를 받아 쌓는 꼴이 된다(server.js 가 이 길에
+   *    textBody 를 붙이지 않은 까닭이다).
+   */
+  async function saveNotificationSettings({ authorization } = {}) {
+    if (!enabled) return off();
+
+    const who = await admit(authorization, PORTAL_TOKEN_PURPOSES.notificationSettingsWrite);
+    if (who.denied) return who.denied;
+
+    return {
+      status: 403,
+      headers: { ...NO_STORE },
+      body: { error: 'forbidden', message: NOTHING_TO_SAVE },
+    };
   }
 
   return {
     enabled,
     backchannelLogout,
     notifications,
+    notificationSettings,
+    saveNotificationSettings,
     jwks: keys,
     LOGOUT_PATH,
     NOTIFICATIONS_PATH,
+    NOTIFICATION_SETTINGS_PATH,
   };
 }
 
@@ -406,9 +541,12 @@ module.exports = {
   readLogoutToken,
   toRow,
   feedFor,
+  mySettings,
+  NOTHING_TO_SAVE,
   LOGOUT_EVENT,
   LOGOUT_PATH,
   NOTIFICATIONS_PATH,
+  NOTIFICATION_SETTINGS_PATH,
   PORTAL_TOKEN_PURPOSES,
   PORTAL_TOKEN_MAX_LIFETIME_SEC,
 };

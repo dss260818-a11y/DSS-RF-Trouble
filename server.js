@@ -950,6 +950,19 @@ const server = http.createServer(async (req, res) => {
         authorization: req.headers.authorization,
       }));
     }
+    // 알림 **설정** — 읽기와 저장이 한 주소다. 🔴 가르는 것은 토큰의 용도이고,
+    // 그 판정도 저쪽에 있다. 🔴 저장 쪽에 textBody 를 붙이지 않은 것은 일부러다
+    // (tools/portal.js 의 saveNotificationSettings 주석).
+    if (p === PORTAL.NOTIFICATION_SETTINGS_PATH && req.method === 'GET') {
+      return sendPlan(res, await PORTAL.notificationSettings({
+        authorization: req.headers.authorization,
+      }));
+    }
+    if (p === PORTAL.NOTIFICATION_SETTINGS_PATH && req.method === 'PUT') {
+      return sendPlan(res, await PORTAL.saveNotificationSettings({
+        authorization: req.headers.authorization,
+      }));
+    }
 
     // 🔴 관문. 무엇을 열어 두고 어디로 보내는지는 tools/auth.js 의 entryPlan 이
     //    정한다(시험이 거기 있다). 요약하면 — 로그인 안 된 사람은 로그인 화면을
