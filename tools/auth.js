@@ -1,23 +1,23 @@
-// 로그인 — 들어오는 길 두 가지와, 들어온 뒤의 세션 쿠키.
+// 로그인 — 들어오는 길 **하나**와, 들어온 뒤의 세션 쿠키.
 //
-// ① 팀 공용 비밀번호 (TEAM_PASSWORD)
-//    처음부터 있던 길이다. 사람 구분이 없다.
-// ② 통합 로그인 (포털 dss-auth 의 OIDC, tools/sso.js)
-//    사람마다 누구인지가 나온다.
+// 🔴 들어오는 길은 통합 로그인(포털 dss-auth 의 OIDC, tools/sso.js) 뿐이다.
 //
-// 🔴 **둘 다 켜져 있으면, 팀 비밀번호만 알아도 들어올 수 있다.** 통합 로그인을
-//    켠다고 해서 비밀번호 길이 저절로 닫히지 않는다 — 두 길은 서로를 막지
-//    않는다. 통합 로그인만 쓰려면 TEAM_PASSWORD 를 **비워야** 한다.
-//    비밀번호 길을 남겨 둔 까닭은 되돌릴 자리를 두기 위해서다: 포털이 멈췄거나
-//    등록이 잘못돼 아무도 못 들어올 때 들어갈 문이 하나는 있어야 한다.
+// ── 🔴 「왜 비밀번호로 들어가는 길이 없지?」 ────────────────────────────────
+// 팀 공용 비밀번호(TEAM_PASSWORD)로 들어오던 길이 2026-10-21 까지 있었고,
+// 그날 **코드에서 걷어냈다.** 비밀번호 받기 · 맞춰 보기 · 5회 잠금 · 설정값
+// 읽기가 모두 없어졌다. 찾아도 안 나오는 것이 맞다.
 //
-// 둘 다 꺼져 있으면 로그인이 아예 없고, 그때 서버는 이 PC(127.0.0.1)에서만
-// 받도록 server.js 가 묶어 둔다.
+// 🔴 **그래서 포털이 멈추면 아무도 이 시스템에 못 들어온다.** 전에는 설정에
+//    TEAM_PASSWORD 한 줄을 넣고 다시 켜면 들어갈 문이 생겼지만, 이제 그 문은
+//    코드에 없다 — 되돌리려면 **그 커밋을 되돌려야** 한다. 설정만으로는
+//    되돌아가지 않는다. 포털이 오래 멈출 것 같으면 그 판단을 먼저 하라.
 //
-// 로그인하면 서명된 쿠키를 준다(기본 30일). 서명 열쇠는 비밀번호 +
-// data/.session-secret 로 만들므로, 비밀번호를 바꾸면 모든 사람의 로그인이
-// 한꺼번에 풀린다(통합 로그인으로 들어온 사람도 함께 풀린다 — 열쇠가 하나라서다.
-// 되돌릴 자리로 쓰는 값이라 그 편이 맞다). 같은 곳에서 연달아 틀리면 잠시 막는다.
+// 통합 로그인 설정이 덜 찼거나 SSO=off 이면 로그인이 아예 없고, 그때 서버는
+// 이 PC(127.0.0.1)에서만 받도록 server.js 가 묶어 둔다(사내망에 로그인 없이
+// 열리는 일을 막는 안전장치다).
+//
+// 로그인하면 서명된 쿠키를 준다(기본 30일). 서명 열쇠는 data/.session-secret
+// 하나로 만든다. 그 파일을 지우면 모든 사람의 로그인이 한꺼번에 풀린다.
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -28,11 +28,18 @@ const COOKIE = 'rfsess';
 // 그리는 재료다. 시스템 수만큼 길어지는 값이라 섞으면 세션 쿠키가 같이 부푼다.
 // 🔴 이것으로 권한을 판정하지 않는다. 포털이 준 것을 그대로 나를 뿐이다.
 const SERVICES_COOKIE = 'rfsvc';
-const MAX_FAILS = 5;            // 이만큼 틀리면
-const LOCK_MS = 10 * 60 * 1000; // 이 시간 동안 막는다
 
 // 목록이 길어져 쿠키 한도(4KB)를 넘으면 머리말이 통째로 사라진다. 미리 자른다.
 const MAX_SERVICES = 30;
+
+// 로그인 안 된 사람을 어디로 보내는가. 두 자리뿐이라 여기 모아 둔다.
+const LOGIN_PAGE = '/login.html';
+const SSO_START = '/api/sso/start';
+
+// 포털에 다녀온 직후라는 표시. 🔴 **쿠키가 아니라 주소에 붙인다** — 되보내기가
+// 끝없이 도는 경우는 바로 *쿠키가 저장되지 않는* 때라서, 쿠키로 센 횟수는 그때
+// 함께 사라져 아무것도 막지 못한다. 주소에 붙은 표시는 그 상황에서도 살아남는다.
+const RETURN_MARK = 'sso';
 
 function loadSecret(dataDir) {
   const f = path.join(dataDir, '.session-secret');
@@ -69,13 +76,16 @@ function cleanServices(value) {
   return out;
 }
 
-function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
-  const hasPassword = !!(password && String(password).length);
-  const sso = !!ssoEnabled;
-  const enabled = hasPassword || sso;
+function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
+  const enabled = !!ssoEnabled;
   const maxAge = days * 86400;
-  const key = enabled ? sha('rf-issue-db|' + loadSecret(dataDir) + '|' + (password || '')) : null;
-  const fails = new Map();      // ip -> { n, until }
+
+  // 🔴 열쇠 재료 끝의 빗금은 **옛 모양을 그대로 둔 것**이다. 전에는 여기에 팀
+  //    비밀번호가 붙었고(`… + '|' + password`), 그 값을 비워 둔 채 돌던 지금
+  //    운영과 글자가 똑같다. 이 빗금을 떼면 열쇠가 달라져 **지금 로그인해 있는
+  //    사람이 전부 한꺼번에 풀린다.** 떼서 얻는 것이 없어 그대로 둔다.
+  //    (tools/auth.test.js 가 이 글자를 붙잡아 둔다)
+  const key = enabled ? sha('rf-issue-db|' + loadSecret(dataDir) + '|') : null;
 
   const mac = s => crypto.createHmac('sha256', key).update(s).digest('base64url');
 
@@ -84,17 +94,8 @@ function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   };
 
-  // 팀 비밀번호로 들어온 세션. 사람 구분이 없으므로 만료 시각 하나뿐이다.
-  // 이 모양은 처음부터 쓰던 것이라 **그대로 둔다** — 이미 브라우저에 들어 있는
-  // 쿠키가 이번 변경으로 풀리면 안 된다.
-  function token() {
-    const exp = String(Math.floor(Date.now() / 1000) + maxAge);
-    return exp + '.' + mac(exp);
-  }
-
   // 내용이 있는 서명 값. 통합 로그인 세션 · 왕복용 임시 쿠키 · 시스템 목록이
-  // 모두 이 모양을 쓴다. 앞 조각이 base64url 글자라 옛 모양(숫자.서명)과
-  // 첫 글자부터 갈린다.
+  // 모두 이 모양을 쓴다.
   function sign(payload, ttlSec) {
     const body = Buffer.from(JSON.stringify({
       ...payload,
@@ -127,65 +128,33 @@ function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
     return '';
   }
 
-  // 옛 모양(만료초.서명)인가. 숫자로 시작하면 그쪽이다.
-  function checkLegacy(raw) {
-    const [exp, sig] = raw.split('.');
-    if (!exp || !sig || !/^\d+$/.test(exp) || Number(exp) * 1000 < Date.now()) return false;
-    return sameMac(sig, mac(exp));
-  }
-
-  function check(req) {
-    if (!enabled) return true;
-    const raw = readCookie(req, COOKIE);
-    if (!raw) return false;
-    if (/^\d/.test(raw)) return checkLegacy(raw);
-    return open(raw) !== null;
-  }
-
   /**
    * 들어온 사람이 누구인가. 못 믿을 쿠키면 null 이다.
+   *
+   * 🔴 **들어온 길이 통합 로그인인 것까지 본다(via).** 서명 열쇠 하나를 세
+   *    쿠키(세션 · 왕복 · 시스템 목록)가 함께 쓰므로, via 를 안 보면 제 브라우저에
+   *    있는 다른 쿠키 값을 세션 자리(rfsess)에 옮겨 담는 것만으로 "로그인한
+   *    것처럼" 통과할 수 있다. 전에는 팀 비밀번호 세션(via:'password')이 있어
+   *    이 자리를 좁힐 수 없었다 — 길이 하나가 된 지금은 좁힐 수 있다.
    *
    * 🔴 돌아오는 user 는 포털이 알려 준 값을 **담아 둔 것**일 뿐이다. 이슈의
    *    담당자 같은 자료 칸을 이 값으로 자동으로 채우지 않는다 — 그 판단은
    *    따로 정할 일이고, 아직 정해지지 않았다.
-   * 팀 비밀번호로 들어온 세션은 사람 구분이 없으므로 user 가 null 이다.
    */
   function session(req) {
     if (!enabled) return null;
-    const raw = readCookie(req, COOKIE);
-    if (!raw) return null;
-    if (/^\d/.test(raw)) return checkLegacy(raw) ? { via: 'password', user: null } : null;
-    const payload = open(raw);
-    if (!payload) return null;
-    return { via: payload.via === 'sso' ? 'sso' : 'password', user: payload.user || null };
+    const payload = open(readCookie(req, COOKIE));
+    if (!payload || payload.via !== 'sso') return null;
+    return { via: 'sso', user: payload.user || null };
   }
 
-  // 결과: { ok } 또는 { ok:false, error, locked }
-  function login(ip, typed) {
-    // 🔴 비밀번호 길이 꺼져 있으면 무엇을 쳐도 들어올 수 없다. 이 줄이 없으면
-    //    아래 비교가 설정되지 않은 값(undefined)을 글자로 바꿔 견주게 된다.
-    if (!hasPassword) return { ok: false, error: '팀 비밀번호 로그인이 꺼져 있습니다.' };
-    const f = fails.get(ip);
-    if (f && f.until > Date.now()) {
-      const min = Math.ceil((f.until - Date.now()) / 60000);
-      return { ok: false, locked: true, error: `여러 번 틀려서 ${min}분 동안 막았습니다. 잠시 뒤에 다시 해 주세요.` };
-    }
-    const ok = crypto.timingSafeEqual(sha(typed || ''), sha(password));
-    if (ok) { fails.delete(ip); return { ok: true }; }
-    // 잠금이 끝났거나 마지막으로 틀린 지 오래됐으면 다시 1부터 센다
-    const now = Date.now();
-    const fresh = !f || (f.until && f.until <= now) || now - f.last > LOCK_MS;
-    const n = fresh ? 1 : f.n + 1;
-    fails.set(ip, { n, last: now, until: n >= MAX_FAILS ? now + LOCK_MS : 0 });
-    if (fails.size > 5000) fails.clear();
-    return { ok: false, error: '비밀번호가 맞지 않습니다.' };
+  function check(req) {
+    if (!enabled) return true;
+    return session(req) !== null;
   }
 
   /**
-   * 세션 쿠키를 굽는다.
-   *
-   * user 없이 부르면 처음부터 쓰던 모양 그대로다(팀 비밀번호 길).
-   * user 를 주면 그 사람이 누구인지가 쿠키 안에 함께 들어간다(통합 로그인 길).
+   * 세션 쿠키를 굽는다. 포털에서 받아 온 사람(user)을 함께 담는다.
    *
    * Secure 를 붙이지 않는다: 이 시스템은 사내망에서 http 로 돈다(Dockerfile 의
    * 건강검사부터 http 다). 붙이면 지금 환경에서 쿠키가 통째로 버려져 로그인이
@@ -193,7 +162,7 @@ function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
    * 고쳐야 한다 — 하나만 바꾸면 그 하나만 조용히 사라진다.
    */
   const setCookie = user =>
-    `${COOKIE}=${user ? sign({ via: 'sso', user }, maxAge) : token()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
+    `${COOKIE}=${sign({ via: 'sso', user: user || null }, maxAge)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
   const clearCookie = () => `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
 
   /**
@@ -220,10 +189,8 @@ function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
 
   return {
     enabled,
-    passwordEnabled: hasPassword,
-    ssoEnabled: sso,
     maxAge,
-    check, login, session,
+    check, session,
     setCookie, clearCookie,
     setServicesCookie, clearServicesCookie, services,
     sign, open,
@@ -231,4 +198,71 @@ function createAuth({ password, dataDir, days = 30, ssoEnabled = false }) {
   };
 }
 
-module.exports = { createAuth, cleanServices, COOKIE, SERVICES_COOKIE };
+/* ================= 관문 — 들어오려는 요청을 어떻게 할 것인가 ================= */
+/**
+ * 🔴 **판단을 server.js 의 요청 처리 한가운데 두지 않는다.** 거기 적은 if 는
+ *    서버를 띄워야만 돌려 볼 수 있어서, 「로그인 안 된 사람이 어디로 가는가」를
+ *    시험으로 물을 수 없다. tools/header.js 가 같은 까닭으로 같은 모양을
+ *    하고 있다 — 순수 함수로 내려놓고 server.js 는 받은 대로 따른다.
+ *
+ *   enabled   로그인이 켜져 있는가(통합 로그인 설정이 다 찼는가)
+ *   pathname  요청 경로
+ *   search    물음표 뒤 글자(`?sso=1`). 되보내기를 세는 데 쓴다
+ *   loggedIn  auth.check(req) 의 결과
+ *
+ * 돌아오는 것은 셋 중 하나다.
+ *   { allow: true }        그냥 처리한다
+ *   { json401: true }      화면 뒤에서 부른 길이다 — 글로 답한다(옮기지 않는다)
+ *   { redirect: '…' }      이리로 보낸다
+ *
+ * ── 🔴 자동 되보내기는 **두 번째에서 멈춘다** ──────────────────────────────
+ * ① 아무 일 없이 들어온 사람      → 포털로 보낸다(로그인 화면을 안 보여 준다)
+ * ② 포털에 다녀왔는데 아직도 로그인이 아니면(`?sso=1` 이 붙어 있다)
+ *    → **다시 보내지 않고** 로그인 화면에 세운다. 이 상황은 거의 언제나
+ *      브라우저가 쿠키를 저장하지 않는 것이고, 다시 보내면 사람은 화면이
+ *      깜빡이는 것만 보게 된다.
+ * ③ 오류를 달고 돌아온 사람(`/login.html?error=…`)은 애초에 여기 걸리지
+ *    않는다 — 로그인 화면은 열어 두기 때문이다. 그 화면도 스스로 되보내지
+ *    않는다(public/login.html).
+ */
+function entryPlan({ enabled, pathname, search, loggedIn } = {}) {
+  if (!enabled || loggedIn) return { allow: true };
+
+  const p = String(pathname || '');
+  // 로그인 없이 열어야 하는 자리 — 로그인 화면, 그 화면이 쓰는 사진,
+  // 살아 있는지 묻는 길, 그리고 통합 로그인 왕복 자체.
+  if (p === LOGIN_PAGE || p.startsWith('/img/') || p === '/api/health' || p.startsWith('/api/sso/')) {
+    return { allow: true };
+  }
+
+  // 화면이 뒤에서 부른 길. 여기서 302 를 주면 fetch 가 그것을 **스스로 따라가**
+  // 포털의 HTML 을 받아 와 "응답이 이상하다"로 끝난다. 글로 답하고 옮기는 일은
+  // 화면에 맡긴다(public/app.js).
+  if (p.startsWith('/api/')) return { json401: true };
+
+  if (new URLSearchParams(String(search || '')).get(RETURN_MARK) === '1') {
+    return { redirect: LOGIN_PAGE + '?error=cookie' };
+  }
+  return { redirect: SSO_START };
+}
+
+/**
+ * 포털에서 돌아온 길임을 **주소에** 적어 둔다. 위 entryPlan 이 이것을 보고
+ * 두 번째 되보내기를 멈춘다. 왜 쿠키가 아닌지는 RETURN_MARK 에 적어 두었다.
+ *
+ * 바깥 주소(`http://…`, `//어디`)에는 붙이지 않는다 — 붙일 까닭이 없고,
+ * 남의 사이트 주소에 우리 표시를 남기게 된다.
+ */
+function markReturn(location) {
+  const s = String(location == null ? '' : location) || '/';
+  if (!s.startsWith('/') || s.startsWith('//')) return s;
+  const i = s.indexOf('#');
+  const head = i >= 0 ? s.slice(0, i) : s;
+  const hash = i >= 0 ? s.slice(i) : '';
+  return head + (head.includes('?') ? '&' : '?') + RETURN_MARK + '=1' + hash;
+}
+
+module.exports = {
+  createAuth, cleanServices, entryPlan, markReturn,
+  COOKIE, SERVICES_COOKIE, LOGIN_PAGE, SSO_START, RETURN_MARK,
+};

@@ -1,104 +1,82 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="ko">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>로그인 · RF 기술이슈 관리 시스템</title>
+<!--
+  🔴 이 화면은 **막힌 사람만** 본다.
+
+  들어오는 길은 DSS 통합 로그인 하나뿐이고, 로그인 안 된 사람은 서버가 이
+  화면을 거치지 않고 바로 포털로 보낸다(server.js 의 관문 · tools/auth.js 의
+  entryPlan). 그러니 여기 서 있다는 것은 포털에 다녀왔는데 안 됐다는 뜻이다.
+
+  🔴 **그래서 이 화면은 스스로 포털로 보내지 않는다.** 자동으로 다시 보내면
+     포털이 또 거절했을 때 끝없이 오가고, 사람은 화면이 깜빡이는 것만 보게
+     된다 — 까닭도 못 읽고 멈출 수도 없다. 까닭을 적어 두고, 다시 갈지는
+     사람이 단추로 정한다.
+-->
 <style>
   :root{--bg2:#fff;--line:#d3dceb;--fg:#0e1a33;--fg2:#4f5e7a;--acc:#1d4fd8;--acc2:#163fae;--bad:#c62828}
   @media (prefers-color-scheme: dark){:root{--bg2:#0c1b36;--line:#1f3763;--fg:#e6eeff;--fg2:#9fb2d6;--acc:#4da3ff;--acc2:#2f86ea;--bad:#f85149}}
   *{box-sizing:border-box}
-  /* 회사 배경 사진(세계지도) 위에 로그인 카드 */
+  /* 회사 배경 사진(세계지도) 위에 카드 */
   body{margin:0;min-height:100vh;display:grid;place-items:center;color:var(--fg);padding:16px;
     background:linear-gradient(rgba(4,12,32,.55),rgba(4,12,32,.75)),#06122b url(/img/world-bg.jpg) center/cover no-repeat;
     font:14px/1.55 "Malgun Gothic","맑은 고딕",-apple-system,"Segoe UI",sans-serif}
-  form{width:100%;max-width:360px;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:26px 24px;
+  .card{width:100%;max-width:360px;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:26px 24px;
     box-shadow:0 18px 50px rgba(0,0,0,.45);border-top:3px solid #f2c14e}
   .brand{text-align:center;margin-bottom:20px}
   .logo{display:inline-block;background:#fff;border-radius:8px;padding:4px 10px}
   .logo img{display:block;height:44px;width:auto}
   h1{font-size:16px;margin:12px 0 0}
   h1 .rf{color:#d99a0b}
-  label{display:block;font-size:12px;color:var(--fg2);font-weight:600;margin-bottom:5px}
-  input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;font:inherit;outline:none}
-  input:focus{border-color:var(--acc)}
-  button{width:100%;margin-top:14px;padding:10px;border:0;border-radius:8px;background:var(--acc);color:#fff;font:inherit;font-weight:700;cursor:pointer}
-  button:hover{background:var(--acc2)}
-  button:disabled{opacity:.6}
-  .err{color:var(--bad);font-size:12.5px;min-height:1.2em;margin-top:10px}
-  .hint{color:var(--fg2);font-size:12px;margin-top:6px}
-  /* 통합 로그인 단추 — 단추 모양은 같고 색만 회사 쪽 금색 테두리로 구분한다 */
-  a.sso{display:block;width:100%;margin-top:4px;padding:10px;border:0;border-radius:8px;background:var(--acc);
+  .err{color:var(--bad);font-size:13px;font-weight:600;margin-bottom:14px;text-align:center}
+  .hint{color:var(--fg2);font-size:12px;margin-top:8px;text-align:center}
+  /* 포털로 가는 길은 보통 링크다 — 브라우저가 그대로 따라가야 하므로 fetch 로 부르지 않는다 */
+  a.sso{display:block;width:100%;padding:10px;border:0;border-radius:8px;background:var(--acc);
     color:#fff;font:inherit;font-weight:700;text-align:center;text-decoration:none}
   a.sso:hover{background:var(--acc2)}
-  /* 두 길이 모두 켜져 있을 때만 보이는 가름선 */
-  .or{display:flex;align-items:center;gap:10px;color:var(--fg2);font-size:12px;margin:16px 0 12px}
-  .or::before,.or::after{content:"";flex:1;height:1px;background:var(--line)}
-  [hidden]{display:none !important}
 </style>
 </head>
 <body>
-<form id="f">
+<div class="card">
   <div class="brand"><span class="logo"><img src="/img/dss-logo.png" alt="(주)디에스에스 DSS Co., Ltd."></span><h1><span class="rf">RF</span> 기술이슈 관리 시스템</h1></div>
 
-  <!-- 통합 로그인. 보통 링크다 — 포털로 넘어가는 길은 브라우저가 그대로 따라가야
-       하므로 fetch 로 부르지 않는다. -->
-  <div id="sso-box" hidden>
-    <a class="sso" href="/api/sso/start">DSS 통합 로그인으로 들어가기</a>
-    <div class="hint">회사 계정으로 들어갑니다.</div>
-  </div>
-
-  <div class="or" id="or" hidden>또는</div>
-
-  <div id="pw-box" hidden>
-    <label for="pw">팀 비밀번호</label>
-    <input id="pw" type="password" autocomplete="current-password" required>
-    <div class="hint">한 번 로그인하면 이 브라우저에서 30일 동안 유지됩니다.</div>
-    <button id="go" type="submit">들어가기</button>
-  </div>
-
   <div class="err" id="err"></div>
-</form>
+  <a class="sso" id="go" href="/api/sso/start">DSS 통합 로그인으로 들어가기</a>
+  <div class="hint" id="hint">회사 계정으로 들어갑니다.</div>
+</div>
 <script>
 const $ = id => document.getElementById(id);
 
-// 통합 로그인에서 되돌아올 때 붙는 사유. 자세한 까닭은 서버 기록에만 남고,
-// 여기 오는 것은 거친 낱말 하나다.
+// 되돌아올 때 붙는 사유. 자세한 까닭은 서버 기록에만 남고, 여기 오는 것은
+// 거친 낱말 하나다(tools/sso.js).
 const REASONS = {
   sso: '통합 로그인에 실패했습니다. 잠시 뒤에 다시 해 주세요.',
   expired: '로그인 시간이 지났습니다. 다시 눌러 주세요.',
   state: '로그인 요청이 맞지 않습니다. 다시 눌러 주세요.',
+  // 포털까지 다녀왔는데도 로그인이 안 된 경우. 거의 언제나 브라우저가 쿠키를
+  // 저장하지 않는 것이라, 다시 눌러도 같은 자리로 돌아온다 — 그 말을 적어 둔다.
+  cookie: '로그인은 됐지만 이 브라우저가 쿠키를 저장하지 못했습니다.',
 };
+const HINTS = {
+  cookie: '브라우저의 쿠키 차단(시크릿 모드 · 추적 방지 · 사내 보안 프로그램)을 풀고 다시 해 주세요.',
+  // 🔴 쿠키를 저장하지 못하는 브라우저는 여기로도 떨어진다 — 포털로 가기 전에
+  //    구워 둔 왕복 쿠키가 사라져 "시간이 지났다"로 보이기 때문이다. 두 번
+  //    눌러도 같은 자리면 쿠키 쪽을 보라는 말을 함께 적어 둔다.
+  expired: '10분이 지났거나, 이 브라우저가 쿠키를 저장하지 못하는 것입니다.',
+};
+
 const reason = new URLSearchParams(location.search).get('error');
-if (reason) $('err').textContent = REASONS[reason] || '로그인하지 못했습니다.';
-
-// 어떤 길이 켜져 있는지 서버에 묻는다. 둘 다 꺼져 있으면 로그인 자체가 없는
-// 상태이므로(이 PC 전용) 그냥 본문으로 보낸다.
-fetch('/api/login-options').then(r => r.json()).then(o => {
-  $('sso-box').hidden = !o.sso;
-  $('pw-box').hidden = !o.password;
-  $('or').hidden = !(o.sso && o.password);
-  if (!o.sso && !o.password) { location.href = '/'; return; }
-  if (o.password) $('pw').focus();
-}).catch(() => { $('pw-box').hidden = false; $('pw').focus(); });
-
-$('f').onsubmit = async e => {
-  e.preventDefault();
-  if ($('pw-box').hidden) return;          // 비밀번호 길이 꺼져 있으면 보낼 것이 없다
-  const go = $('go'), err = $('err');
-  go.disabled = true; err.textContent = '';
-  try {
-    const r = await fetch('/api/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: $('pw').value }),
-    });
-    const j = await r.json().catch(() => ({}));
-    if (r.ok && j.ok) { location.href = '/'; return; }
-    err.textContent = j.error || '로그인하지 못했습니다.';
-  } catch { err.textContent = '서버에 연결하지 못했습니다.'; }
-  go.disabled = false;
-  $('pw').select();
-};
+if (reason) {
+  $('err').textContent = REASONS[reason] || '로그인하지 못했습니다.';
+  if (HINTS[reason]) $('hint').textContent = HINTS[reason];
+  $('go').textContent = 'DSS 통합 로그인으로 다시 시도';
+} else {
+  // 로그아웃한 사람이나 이 주소를 그냥 연 사람. 막힌 것이 아니라 안내다.
+  $('err').textContent = '로그인이 필요합니다.';
+}
 </script>
 </body>
 </html>

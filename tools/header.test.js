@@ -34,7 +34,7 @@ const TEMP = [];
 function tempAuth() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rf-header-'));
   TEMP.push(d);
-  return createAuth({ password: 'test-team-password', dataDir: d });
+  return createAuth({ dataDir: d, ssoEnabled: true });
 }
 test.after(() => {
   for (const d of TEMP) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }

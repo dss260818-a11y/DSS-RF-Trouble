@@ -41,21 +41,27 @@ const document = {
   addEventListener() {},
 };
 
-// 팀 비밀번호(TEAM_PASSWORD)가 켜져 있으면 먼저 로그인해서 받은 쿠키로 요청한다
-const envPw = (() => {
-  if (process.env.TEAM_PASSWORD) return process.env.TEAM_PASSWORD;
+// 로그인이 켜져 있으면 세션 쿠키를 들고 요청한다.
+//
+// 🔴 들어오는 길이 DSS 통합 로그인 하나뿐이라, **브라우저 없이 로그인할 방법이
+//    없다** — 포털로 갔다 오는 왕복을 여기서 흉내 낼 수 없다. 대신 이 시험은
+//    서버와 **같은 PC · 같은 폴더**에서 돌므로, 서버가 쓰는 서명 열쇠의 재료
+//    (data/.session-secret)를 그대로 읽어 같은 쿠키를 직접 굽는다.
+//    새 문을 여는 것이 아니다 — 그 파일을 읽을 수 있는 사람은 이미 서버가 도는
+//    PC 를 쓰고 있다.
+// 🔴 도커로 띄운 서버에는 통하지 않는다(그쪽은 제 볼륨의 .session-secret 을
+//    쓴다). 이 시험은 PC 에서 `RF이슈관리 시작.bat` 으로 띄운 서버를 본다.
+const { createAuth } = require('./auth');
+const cookie = (() => {
   try {
-    const m = fs.readFileSync(path.join(ROOT, '.env'), 'utf8').match(/^\s*TEAM_PASSWORD\s*=\s*(.*?)\s*$/m);
-    return m ? m[1].replace(/^["']|["']$/g, '') : '';
-  } catch { return ''; }
+    const auth = createAuth({ dataDir: path.join(ROOT, 'data'), ssoEnabled: true });
+    return auth.setCookie({ sub: 'smoke-ui', name: '연기 시험', email: null, role: null }).split(';')[0];
+  } catch (e) {
+    console.log('  !!  세션 쿠키를 만들지 못했습니다(로그인이 켜져 있으면 전부 401 입니다): ' + e.message);
+    return '';
+  }
 })();
-const login = !envPw ? Promise.resolve('') :
-  globalThis.fetch(BASE + '/api/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password: envPw }),
-  }).then(r => (r.headers.get('set-cookie') || '').split(';')[0]);
-const authFetch = async (u, o = {}) => {
-  const cookie = await login;
+const authFetch = (u, o = {}) => {
   const headers = cookie ? { ...(o.headers || {}), Cookie: cookie } : o.headers;
   return globalThis.fetch(String(u).startsWith('http') ? u : BASE + u, { ...o, headers });
 };

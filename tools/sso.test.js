@@ -313,7 +313,7 @@ function makeSso({ fetchImpl, resolve } = {}) {
     SSO_ISSUER: ISSUER, SSO_CLIENT_ID: CLIENT_ID,
     SSO_CLIENT_SECRET: SECRET, SSO_REDIRECT_URI: REDIRECT,
   });
-  const auth = createAuth({ password: '', dataDir: tempDir(), ssoEnabled: true });
+  const auth = createAuth({ dataDir: tempDir(), ssoEnabled: true });
   const sso = createSso({
     config, auth, fetchImpl,
     jwks: { resolve: resolve || resolveKey },

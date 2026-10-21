@@ -2,7 +2,7 @@
 #
 # NAS 에 폴더 하나(예: /volume1/docker/rf-issue-db)를 만들고 이 저장소 내용과 함께
 #   config.docker.json  (config.docker.example.json 을 복사해 채움)
-#   docker.env          (docker.env.example 을 복사해 채움 — 팀 비밀번호 등)
+#   docker.env          (docker.env.example 을 복사해 채움 — 통합 로그인 설정 등)
 #   data/               (지금 PC 의 data 폴더를 그대로 복사)
 # 를 넣은 뒤, Container Manager 에서 이 폴더로 프로젝트를 만들면 된다.
 #
