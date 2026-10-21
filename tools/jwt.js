@@ -67,7 +67,7 @@ function toPublicKey(jwk) {
 const no = (code, reason) => ({ ok: false, code, reason: reason || code });
 
 /**
- * 신분 토큰 검증.
+ * 포털이 RS256 으로 서명한 토큰을 검증한다.
  *
  *   resolveKey(kid)   kid 에 해당하는 JWK(또는 KeyObject)를 주는 함수. 없으면 null.
  *                     모르는 kid 일 때 한 번 다시 받아오는 일은 이 함수가 아니라
@@ -75,15 +75,35 @@ const no = (code, reason) => ({ ok: false, code, reason: reason || code });
  *   issuer            포털의 발급자 주소. **글자 그대로** 같아야 한다.
  *   audience          우리 client_id. 남에게 발급된 토큰을 가져와 쓰는 것을 막는다.
  *   nonce             로그인을 시작할 때 우리가 만들어 둔 값. 옛 토큰 재사용을 막는다.
+ *   nonceMode         nonce 칸을 어떻게 볼 것인가. 아래 설명을 보라.
  *   clockToleranceSec 두 기계의 시계 차이를 이만큼만 봐 준다. 그 이상은 시계를
  *                     고칠 일이지 봐 줄 일이 아니다.
+ *
+ * ── 🔴 nonce 칸의 뜻이 **방향마다 반대다** ──────────────────────────────────
+ * 포털과 우리 사이에 오가는 토큰은 방향이 둘이고, 그 둘이 nonce 에 **정반대**를
+ * 요구한다.
+ *
+ *   nonceMode:'match'   (기본) 로그인 때 받는 신분 토큰(id_token). 우리가 이번
+ *                       왕복을 시작하며 만들어 둔 값과 **같아야** 한다. 없으면
+ *                       예전에 잡아 둔(아직 안 만료된) 토큰을 다시 내밀어 들어올
+ *                       수 있다.
+ *   nonceMode:'absent'  포털이 우리에게 거는 말(로그아웃 통보 · 서비스 토큰).
+ *                       nonce 가 **없어야** 한다. 규격이 금지하는 자리이고,
+ *                       🔴 막으려는 것은 「로그인 때 받은 id_token 을 그 통로에
+ *                       되쓰는 것」이다 — 그 토큰은 서명 · 발급자 · 수신자 ·
+ *                       만료를 전부 통과하므로 **nonce 하나가 유일한 구분점**이다.
+ *
+ * 🔴 두 길이 **같은 자리에서** 갈린다(검사 순서가 같다). 한쪽만 따로 적어 두면
+ *    그중 하나는 반드시 덜 검토된다 — 이 저장소가 서명을 두 벌로 두지 않는 것과
+ *    같은 까닭이다.
  */
-async function verifyIdToken(token, opts) {
+async function verifyToken(token, opts) {
   const {
     resolveKey,
     issuer,
     audience,
     nonce,
+    nonceMode = 'match',
     now = Date.now(),
     clockToleranceSec = 30,
   } = opts || {};
@@ -157,9 +177,18 @@ async function verifyIdToken(token, opts) {
   if (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat)) return no('IAT');
   if (payload.iat - clockToleranceSec > nowSec) return no('IAT');
 
-  // 우리가 이번 로그인을 시작하며 만들어 둔 값과 같아야 한다. 이것이 없으면
-  // 예전에 잡아 둔(아직 안 만료된) 토큰을 다시 내밀어 들어올 수 있다.
-  if (typeof payload.nonce !== 'string' || payload.nonce !== nonce) return no('NONCE');
+  // nonce — 방향에 따라 **정반대**를 요구한다(위 머리말).
+  if (nonceMode === 'absent') {
+    // 🔴 포털이 우리에게 거는 말에는 nonce 가 없어야 한다. 있으면 로그인 때
+    //    받은 신분 토큰을 되쓰는 것이다.
+    if (payload.nonce !== undefined) return no('NONCE', 'nonce 가 있습니다(신분 토큰일 수 있습니다).');
+  } else {
+    // 우리가 이번 로그인을 시작하며 만들어 둔 값과 같아야 한다. 이것이 없으면
+    // 예전에 잡아 둔(아직 안 만료된) 토큰을 다시 내밀어 들어올 수 있다.
+    // 🔴 부르는 쪽이 nonce 를 안 넘기면 여기서 **막힌다**(undefined 는 문자열이
+    //    아니다). 실수는 닫히는 쪽으로 기운다.
+    if (typeof payload.nonce !== 'string' || payload.nonce !== nonce) return no('NONCE');
+  }
 
   // 사람을 가리키는 유일한 값. 포털의 users.id 다.
   if (typeof payload.sub !== 'string' || !payload.sub) return no('SUBJECT');
@@ -167,4 +196,13 @@ async function verifyIdToken(token, opts) {
   return { ok: true, header, payload };
 }
 
-module.exports = { verifyIdToken, toPublicKey, ALG, MAX_TOKEN_LEN };
+/**
+ * 로그인 때 받는 신분 토큰(id_token).
+ *
+ * 🔴 **이름을 남겨 둔 것은 부르는 쪽(tools/sso.js)을 건드리지 않기 위해서다.**
+ *    판정은 위 verifyToken 그대로이고 기본값(nonceMode:'match')도 그대로다 —
+ *    로그인 왕복의 판정은 한 글자도 바뀌지 않았다.
+ */
+const verifyIdToken = (token, opts) => verifyToken(token, opts);
+
+module.exports = { verifyToken, verifyIdToken, toPublicKey, ALG, MAX_TOKEN_LEN };

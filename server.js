@@ -7,10 +7,12 @@ const { excelSignature } = require('./tools/excel-sig');
 const { createBackup } = require('./tools/backup');
 const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 const { local, mapped } = require('./tools/paths');
-const { createAuth, entryPlan, markReturn } = require('./tools/auth');
+const { createAuth, entryPlan, markReturn, DEFAULT_DAYS } = require('./tools/auth');
 const { readSsoConfig, createSso } = require('./tools/sso');
 const { headerView, logoutPlan } = require('./tools/header');
 const { createNotifier, bellFeed, feedPlan, dismissPlan } = require('./tools/notify');
+const { createRevocations } = require('./tools/revoked');
+const { createPortalGateway } = require('./tools/portal');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
 const { msgSentTime } = require('./tools/msg-date');
 
@@ -44,8 +46,17 @@ fs.mkdirSync(DATA, { recursive: true });
 // 로그인 없이 0.0.0.0 을 적어 두면 사내망 누구나 고치고 지울 수 있으므로
 // 이 PC 로만 묶는다.
 const SSO_CFG = readSsoConfig(process.env);
-const AUTH = createAuth({ dataDir: DATA, ssoEnabled: SSO_CFG.enabled });
+// 끊긴 사람 명부 — 포털이 「이 사람 끊어라」를 쏘면 여기 끊은 시각이 적히고,
+// 그보다 이전에 구운 세션 쿠키는 서명이 맞아도 받지 않는다. 쿠키 수명이 30일
+// 이라 기다리는 것이 답이 될 수 없다 — 까닭은 tools/revoked.js 머리말.
+// 🔴 수명을 **auth 와 같은 값**으로 넘긴다. 짧게 넘기면 아직 살아 있는 쿠키를
+//    막던 줄이 먼저 지워진다.
+const REVOCATIONS = createRevocations({ dataDir: DATA, ttlSec: DEFAULT_DAYS * 86400 });
+const AUTH = createAuth({ dataDir: DATA, ssoEnabled: SSO_CFG.enabled, revocations: REVOCATIONS });
 const SSO = createSso({ config: SSO_CFG, auth: AUTH });
+// 🔴 포털이 **우리에게** 말을 거는 길 둘(끊어라 신호 · 내 알림 내주기).
+//    방향도 자격도 아래 NOTIFY 와 반대다 — tools/portal.js 머리말.
+const PORTAL = createPortalGateway({ config: SSO_CFG, revocations: REVOCATIONS });
 // 전역 알림 종 — 포털에 **우리 비밀값으로** 물어 남의 시스템 알림을 받아 온다.
 // 설정은 통합 로그인의 것을 그대로 쓴다(새 설정값이 없다). tools/notify.js 머리말.
 const NOTIFY = createNotifier({ config: SSO_CFG });
@@ -724,6 +735,46 @@ function body(req) {
   });
 }
 
+/**
+ * 본문을 **글자 그대로** 읽는다(JSON 으로 풀지 않는다).
+ *
+ * 백채널 로그아웃은 폼 인코딩으로 온다 — 위 body() 로는 읽을 수 없다.
+ *
+ * 🔴 상한이 20MB 가 아니라 **64KB** 인 것은 일부러다. 이 창구는 **인증 없이
+ *    누구나 두드릴 수 있고**, 토큰은 아무리 커도 몇 KB 다(tools/jwt.js 의
+ *    MAX_TOKEN_LEN 은 16KB). 넉넉히 잡아도 64KB 면 충분하고, 그 선이 없으면
+ *    자격도 없는 요청이 서버의 메모리를 먹는다.
+ * 🔴 **던지지 않는다.** 넘치거나 끊기면 빈 글자다 — 아래에서 「모양이 다른
+ *    요청」과 같은 400 으로 끝난다.
+ */
+function textBody(req, limit = 64 * 1024) {
+  return new Promise(resolve => {
+    let s = '', over = false;
+    req.on('data', c => {
+      if (over) return;
+      s += c;
+      if (s.length > limit) { over = true; s = ''; req.destroy(); }
+    });
+    req.on('end', () => resolve(over ? '' : s));
+    req.on('error', () => resolve(''));
+    // 🔴 상한을 넘어 우리가 끊은 경우에는 'end' 가 오지 않는다. 'close' 를 안
+    //    들으면 그 요청의 처리가 **영영 안 끝난다**(약속이 풀리지 않는다).
+    req.on('close', () => resolve(over ? '' : s));
+  });
+}
+
+/** 창구 둘(tools/portal.js)이 돌려준 계획을 그대로 적는다. */
+function sendPlan(res, plan) {
+  if (plan.body === null) { res.writeHead(plan.status, plan.headers); return res.end(); }
+  const text = JSON.stringify(plan.body);
+  res.writeHead(plan.status, {
+    ...plan.headers,
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': Buffer.byteLength(text),
+  });
+  res.end(text);
+}
+
 // Google 번역(키 없이 쓰는 공개 주소)으로 여러 글을 한 번에 일본어로.
 // 글마다 따로 부르면 Google 이 자동 요청으로 보고 막으므로(429) 한 요청에 묶어 보낸다.
 // 인터넷이 안 되거나 막히면 원문을 그대로 돌려주고 failed 로 센다.
@@ -878,6 +929,26 @@ const server = http.createServer(async (req, res) => {
       const location = r.ok ? markReturn(r.location) : r.location;
       res.writeHead(303, { Location: location, 'Set-Cookie': r.setCookies, 'Cache-Control': 'no-store' });
       return res.end();
+    }
+
+    /* ---- 🔴 포털이 **우리에게** 말을 거는 길 둘 ---- */
+    //
+    // 🔴 **관문보다 위에 둔다.** 아래 entryPlan 은 로그인 안 된 요청에게 401 을
+    //    준다 — 포털은 사람이 아니라 서버라 우리 세션 쿠키가 없고, 아래에 두면
+    //    두 창구가 통째로 401 이 된다. 자격은 세션이 아니라 **포털이 서명한
+    //    토큰**이고, 그 검증이 창구의 유일한 문지기다(tools/portal.js).
+    // 🔴 **판정을 여기 적지 않는다.** 여기 적은 if 는 서버를 띄워야만 돌려 볼
+    //    수 있어 「막아야 하는 경우」를 시험으로 물을 수 없다. 전부 저쪽에 있다.
+    if (p === PORTAL.LOGOUT_PATH && req.method === 'POST') {
+      return sendPlan(res, await PORTAL.backchannelLogout({
+        contentType: req.headers['content-type'],
+        body: await textBody(req),
+      }));
+    }
+    if (p === PORTAL.NOTIFICATIONS_PATH && req.method === 'GET') {
+      return sendPlan(res, await PORTAL.notifications({
+        authorization: req.headers.authorization,
+      }));
     }
 
     // 🔴 관문. 무엇을 열어 두고 어디로 보내는지는 tools/auth.js 의 entryPlan 이

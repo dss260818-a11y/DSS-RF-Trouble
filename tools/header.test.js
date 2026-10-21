@@ -1,6 +1,6 @@
 // 머리말 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js tools/portal.test.js
 //
 // 🔴 화면(public/app.js)은 여기서 돌리지 못한다. 그래서 「그릴까 말까 · 어느
 //    칸이 지금 여기인가 · 로그아웃이 어느 길로 가는가」를 tools/header.js 의

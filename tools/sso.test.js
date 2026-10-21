@@ -1,6 +1,6 @@
 // 통합 로그인 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js tools/portal.test.js
 //
 // 🔴 시험 파일을 더하면 **이 줄에도 적어라.** 이 저장소에는 시험 목록을 들고
 //    있는 설정 파일이 없어서(의존성 0개 · package.json 없음) 여기 적힌 명령이

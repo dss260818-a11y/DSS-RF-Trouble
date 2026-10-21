@@ -372,6 +372,10 @@ module.exports = {
   feedPlan,
   dismissPlan,
   cleanDismissKeys,
+  // 🔴 **내주는 쪽도 이 아홉을 쓴다**(tools/portal.js). 받는 모양과 내주는 모양이
+  //    같은 글자여야 하는데 저장소가 하나라 컴파일러가 잡아 주지 않는다 — 그래서
+  //    두 벌로 적지 않고 여기 하나를 함께 쓴다.
+  FIELDS,
   FEED_PATH,
   DISMISS_PATH,
   TIMEOUT_MS,

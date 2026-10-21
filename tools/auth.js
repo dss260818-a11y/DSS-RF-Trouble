@@ -76,7 +76,18 @@ function cleanServices(value) {
   return out;
 }
 
-function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
+/**
+ * createAuth({ dataDir, days, ssoEnabled, revocations })
+ *
+ *   revocations  끊긴 사람 명부(tools/revoked.js). 🔵 **없어도 된다** — 안 넣으면
+ *                끊긴 사람이 하나도 없는 것과 똑같이 돈다(지금까지의 동작 그대로).
+ *                넣으면 session() 이 쿠키를 받을 때마다 한 번 더 묻는다.
+ */
+// 세션 쿠키의 수명(일). 🔴 끊긴 사람 명부의 청소 주기도 이 값을 따라가야 한다
+// (tools/revoked.js 의 ttlSec) — 그래서 숫자를 두 곳에 적지 않고 여기서 꺼내 쓴다.
+const DEFAULT_DAYS = 30;
+
+function createAuth({ dataDir, days = DEFAULT_DAYS, ssoEnabled = false, revocations = null }) {
   const enabled = !!ssoEnabled;
   const maxAge = days * 86400;
 
@@ -97,9 +108,14 @@ function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
   // 내용이 있는 서명 값. 통합 로그인 세션 · 왕복용 임시 쿠키 · 시스템 목록이
   // 모두 이 모양을 쓴다.
   function sign(payload, ttlSec) {
+    const nowSec = Math.floor(Date.now() / 1000);
     const body = Buffer.from(JSON.stringify({
       ...payload,
-      exp: Math.floor(Date.now() / 1000) + ttlSec,
+      // 🔴 **언제 구웠는가.** 끊긴 사람 명부(tools/revoked.js)가 「끊은 시각보다
+      //    이전에 구운 쿠키인가」를 이 값으로 가른다. 이 값이 없으면 그 판정을
+      //    할 수가 없다.
+      iat: nowSec,
+      exp: nowSec + ttlSec,
     }), 'utf8').toString('base64url');
     return body + '.' + mac(body);
   }
@@ -129,6 +145,25 @@ function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
   }
 
   /**
+   * 이 쿠키를 언제 구웠나(초).
+   *
+   * 보통은 쿠키 안의 iat 를 읽는다. 🔴 **그 칸이 없는 쿠키가 있다** — iat 를
+   * 넣기 시작한 2026-10-21 이전에 구운 것들이고, 남은 수명(최대 30일) 동안
+   * 돌아다닌다. 그때는 만료 시각에서 수명을 빼 되짚는다: 이 쿠키는 전부
+   * `sign(…, maxAge)` 로 구웠으므로 `exp - maxAge` 가 곧 구운 시각이다.
+   *
+   * 🔴 되짚기는 **지금 maxAge 로 구운 쿠키에만** 맞는다. days 를 바꾸면 옛
+   *    쿠키의 되짚은 값이 틀어진다 — 그래서 되짚기는 보조일 뿐이고, 새로 굽는
+   *    쿠키는 모두 iat 를 들고 다닌다. 옛 쿠키가 다 만료되면 이 자리는 쓰이지
+   *    않는다.
+   */
+  function issuedAt(payload) {
+    if (typeof payload.iat === 'number' && Number.isFinite(payload.iat)) return payload.iat;
+    if (typeof payload.exp === 'number' && Number.isFinite(payload.exp)) return payload.exp - maxAge;
+    return NaN;      // 여기까지 올 수 없다(open 이 exp 를 이미 봤다). 모르면 막힌다.
+  }
+
+  /**
    * 들어온 사람이 누구인가. 못 믿을 쿠키면 null 이다.
    *
    * 🔴 **들어온 길이 통합 로그인인 것까지 본다(via).** 서명 열쇠 하나를 세
@@ -136,6 +171,11 @@ function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
    *    있는 다른 쿠키 값을 세션 자리(rfsess)에 옮겨 담는 것만으로 "로그인한
    *    것처럼" 통과할 수 있다. 전에는 팀 비밀번호 세션(via:'password')이 있어
    *    이 자리를 좁힐 수 없었다 — 길이 하나가 된 지금은 좁힐 수 있다.
+   *
+   * 🔴 **끊긴 사람인지도 본다.** 포털이 「이 사람 끊어라」를 쏘면(백채널
+   *    로그아웃, tools/portal.js) 끊은 시각이 명부(tools/revoked.js)에 적히고,
+   *    그보다 이전에 구운 쿠키는 **서명이 맞아도 받지 않는다.** 명부를 안
+   *    넣었으면 이 줄은 없는 것과 같다.
    *
    * 🔴 돌아오는 user 는 포털이 알려 준 값을 **담아 둔 것**일 뿐이다. 이슈의
    *    담당자 같은 자료 칸을 이 값으로 자동으로 채우지 않는다 — 그 판단은
@@ -145,6 +185,12 @@ function createAuth({ dataDir, days = 30, ssoEnabled = false }) {
     if (!enabled) return null;
     const payload = open(readCookie(req, COOKIE));
     if (!payload || payload.via !== 'sso') return null;
+    if (revocations) {
+      const sub = payload.user && typeof payload.user.sub === 'string' ? payload.user.sub : '';
+      // sub 가 없는 쿠키는 명부와 맞춰 볼 길이 없다. 끊으려 해도 지목할 수 없는
+      // 쿠키라 그냥 지나간다 — 통합 로그인으로 들어오면 sub 는 늘 있다(sso.js).
+      if (sub && !revocations.allows(sub, issuedAt(payload))) return null;
+    }
     return { via: 'sso', user: payload.user || null };
   }
 
@@ -264,5 +310,5 @@ function markReturn(location) {
 
 module.exports = {
   createAuth, cleanServices, entryPlan, markReturn,
-  COOKIE, SERVICES_COOKIE, LOGIN_PAGE, SSO_START, RETURN_MARK,
+  COOKIE, SERVICES_COOKIE, LOGIN_PAGE, SSO_START, RETURN_MARK, DEFAULT_DAYS,
 };

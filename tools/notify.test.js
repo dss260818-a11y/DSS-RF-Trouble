@@ -1,6 +1,6 @@
 // 알림 종 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js tools/portal.test.js
 //
 // 🔴 이 저장소에는 package.json 이 없다 — **이 주석 한 줄이 곧 등록이다.** 위
 //    명령에서 빠지면 이 시험은 조용히 안 돈다(다른 시험 파일 셋의 머리말에도
