@@ -10,6 +10,7 @@ const { local, mapped } = require('./tools/paths');
 const { createAuth, entryPlan, markReturn } = require('./tools/auth');
 const { readSsoConfig, createSso } = require('./tools/sso');
 const { headerView, logoutPlan } = require('./tools/header');
+const { createNotifier, bellFeed, feedPlan, dismissPlan } = require('./tools/notify');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
 const { msgSentTime } = require('./tools/msg-date');
 
@@ -45,6 +46,9 @@ fs.mkdirSync(DATA, { recursive: true });
 const SSO_CFG = readSsoConfig(process.env);
 const AUTH = createAuth({ dataDir: DATA, ssoEnabled: SSO_CFG.enabled });
 const SSO = createSso({ config: SSO_CFG, auth: AUTH });
+// 전역 알림 종 — 포털에 **우리 비밀값으로** 물어 남의 시스템 알림을 받아 온다.
+// 설정은 통합 로그인의 것을 그대로 쓴다(새 설정값이 없다). tools/notify.js 머리말.
+const NOTIFY = createNotifier({ config: SSO_CFG });
 const LOOPBACK = h => h === '127.0.0.1' || h === 'localhost' || h === '::1';
 const HOST = (!LOOPBACK(WANT_HOST) && !AUTH.enabled) ? '127.0.0.1' : WANT_HOST;
 const HOST_DOWNGRADED = HOST !== WANT_HOST;
@@ -902,7 +906,34 @@ const server = http.createServer(async (req, res) => {
         issuer: SSO_CFG.issuer,
         currentServiceId: SSO_CFG.clientId,
         loginEnabled: AUTH.enabled,
+        // 🔴 종을 **둘까**만 여기서 답한다. 몇 건인지는 아래 창구가 따로 답한다 —
+        //    이 길에서 포털을 부르면 머리말이 포털을 기다리게 된다.
+        notifications: NOTIFY.enabled,
       }));
+    }
+
+    /* ---- 전역 알림 종 — 다른 시스템의 알림을 포털에서 받아 온다 ---- */
+    //
+    // 🔴 **화면이 포털을 직접 부르지 않는다.** 부르려면 우리 비밀값
+    //    (SSO_CLIENT_SECRET)을 브라우저에 줘야 한다. 서버가 대신 묻고 화면은 이
+    //    창구만 본다 — 나가는 것은 그릴 글자뿐이다(tools/notify.js 의 bellFeed).
+    // 🔴 **누구의 알림인지는 세션에서만 읽는다**(feedPlan · dismissPlan). 브라우저가
+    //    적어 보낸 번호를 믿으면 남의 알림을 꺼내 보고 지우는 통로가 된다.
+    // 🔴 포털이 느리거나 죽어도 여기는 **늘 200 이다** — 못 물어본 것은 degraded 로
+    //    말한다(「알림이 없다」와 다른 말이다). 던지지 않으므로 화면이 깨지지 않는다.
+    if (p === '/api/notifications' && req.method === 'GET') {
+      const plan = feedPlan({ session: AUTH.session(req) });
+      // 물을 사람이 없으면 포털을 부르지 않는다. degraded 는 거짓이다 — 못 불러온
+      // 것이 아니라 물을 것이 없는 것이다.
+      if (!plan.ok) return send(res, 200, { items: [], count: 0, degraded: false });
+      return send(res, 200, bellFeed(await NOTIFY.feed(plan.sub)));
+    }
+    if (p === '/api/notifications/dismiss' && req.method === 'POST') {
+      const plan = dismissPlan({ session: AUTH.session(req), body: await body(req) });
+      if (!plan.ok) return send(res, 400, { error: '지울 알림을 알 수 없습니다.', code: 'KEYS' });
+      // 🔴 「적혔는가」만 돌려준다. 못 적었으면 화면이 그 줄을 되살려 다시 누르게
+      //    한다 — 같은 열쇠를 두 번 지우는 것은 한 번 지우는 것과 같아 안전하다.
+      return send(res, 200, { ok: await NOTIFY.dismiss(plan.sub, plan.keys) });
     }
 
     if (p === '/api/file' && (req.method === 'GET' || req.method === 'HEAD')) {

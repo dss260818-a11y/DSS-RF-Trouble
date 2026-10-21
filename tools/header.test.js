@@ -1,6 +1,6 @@
 // 머리말 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js
 //
 // 🔴 화면(public/app.js)은 여기서 돌리지 못한다. 그래서 「그릴까 말까 · 어느
 //    칸이 지금 여기인가 · 로그아웃이 어느 길로 가는가」를 tools/header.js 의
@@ -41,7 +41,8 @@ test.after(() => {
 });
 
 const view = over => headerView({
-  session: SSO_SESSION, services: LIST, issuer: ISSUER, currentServiceId: ME, loginEnabled: true, ...over,
+  session: SSO_SESSION, services: LIST, issuer: ISSUER, currentServiceId: ME, loginEnabled: true,
+  notifications: true, ...over,
 });
 
 /* ================= ① 시스템 목록 드롭다운 ================= */
@@ -162,6 +163,27 @@ test('세션이 아예 없으면 비밀번호 길과 같게 다룬다', () => {
 
 test('로그인이 꺼져 있으면(이 PC 전용) 로그아웃 단추도 없다', () => {
   assert.equal(view({ session: null, loginEnabled: false }).logout, false);
+});
+
+/* ================= ④ 알림 종을 머리말에 둘까 ================= */
+/* 🔴 무엇을 그릴지(몇 건 · 무엇이 들었나 · 일부를 못 불러왔나)는 여기서 정하지
+      않는다 — 그것은 tools/notify.js 와 그 시험(tools/notify.test.js)의 몫이다.
+      여기서 답하는 것은 「자리를 둘까」 하나뿐이다. */
+
+test('통합 로그인으로 들어온 사람에게는 종이 있다', () => {
+  assert.equal(view().bell, true);
+});
+
+test('🔴 로그인 안 된 사람에게는 종이 없다', () => {
+  assert.equal(view({ session: null }).bell, false);
+  // 포털에 들어간 적이 없는 사람은 물어볼 번호(sub)가 없다
+  assert.equal(view({ session: PW_SESSION }).bell, false);
+});
+
+test('알림을 물어볼 수 없는 설정이면 종을 그리지 않는다', () => {
+  // 통합 로그인 설정이 덜 차 있으면 포털에 물을 자격 자체가 없다
+  assert.equal(view({ notifications: false }).bell, false);
+  assert.equal(view({ notifications: undefined }).bell, false);
 });
 
 /* ================= ③ 로그아웃이 어느 길로 가는가 ================= */

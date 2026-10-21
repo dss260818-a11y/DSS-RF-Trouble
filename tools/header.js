@@ -1,8 +1,9 @@
-// 머리말에 더한 세 가지의 **판단**만 모아 둔 곳.
+// 머리말에 더한 네 가지의 **판단**만 모아 둔 곳.
 //
 //   ① 시스템 목록 드롭다운 — 그릴까, 어느 칸이 「지금 여기」인가
 //   ② 「통합 로그인으로」 — 그릴까, 어디로 가나
 //   ③ 로그아웃 — 이 시스템만 끊나, 포털까지 끊나
+//   ④ 알림 종 — 그릴까 (무엇을 그리나는 tools/notify.js 가 정한다)
 //
 // 🔴 **판단을 화면 파일에 두지 않는다.** public/app.js 안에 적은 if 는 이
 //    저장소에서 아무도 돌려 볼 수 없다 — 브라우저를 띄우는 시험이 없고,
@@ -92,6 +93,7 @@ function serviceMenu(services, currentServiceId) {
  *   issuer            SSO_ISSUER. 🔴 주소를 코드에 박지 않는다
  *   currentServiceId  이 시스템의 client_id(SSO_CLIENT_ID)
  *   loginEnabled      로그인이 켜져 있는가(이 PC 전용으로 돌 때는 꺼져 있다)
+ *   notifications     알림을 물어볼 수 있는가(tools/notify.js 의 createNotifier().enabled)
  *
  * 🔴 **가르는 기준은 「이 사람이 어느 길로 들어왔나」(session.via) 이지
  *    「지금 통합 로그인이 켜져 있나」가 아니다.** 팀 비밀번호로 들어온 사람은
@@ -100,7 +102,7 @@ function serviceMenu(services, currentServiceId) {
  *    상관없는 곳으로 보내는 것이다. 설정이 꺼진 뒤에도 포털 세션을 들고 있는
  *    사람은 남아 있으므로, 그 사람에게는 계속 보여야 한다.
  */
-function headerView({ session, services, issuer, currentServiceId, loginEnabled } = {}) {
+function headerView({ session, services, issuer, currentServiceId, loginEnabled, notifications } = {}) {
   const sso = !!(session && session.via === 'sso');
   // 끝의 빗금을 떼어 둔다 — 안 떼면 `…//apps` 가 된다.
   const base = text(issuer).replace(/\/+$/, '');
@@ -112,6 +114,18 @@ function headerView({ session, services, issuer, currentServiceId, loginEnabled 
     // 주소를 못 읽으면(설정이 빠졌으면) 빈 글자다. 반쯤 그린 링크보다 없는 편이 낫다.
     portalUrl: sso && base ? base + PORTAL_APPS_PATH : '',
     logout: !!loginEnabled,
+    /**
+     * 🔴 **알림 종은 통합 로그인으로 들어온 사람에게만 있다.** 포털에 「이 사람의
+     * 알림」을 물으려면 그 사람의 포털 번호(sub)가 있어야 하는데, 다른 길로 들어온
+     * 사람에게는 그 번호가 없다 — 물을 대상 자체가 없다. 로그인 안 된 사람은 이
+     * 창구에 닿지도 못한다(server.js 의 관문).
+     *
+     * 🔴 **그릴 내용은 여기서 정하지 않는다.** 이 칸은 「종이라는 자리를 머리말에
+     * 둘까」 하나만 답한다. 몇 건인지 · 무엇이 들었는지 · 일부를 못 불러왔는지는
+     * 머리말을 그린 **뒤에** 따로 물어 온다(/api/notifications). 그래야 포털이
+     * 느려도 머리말이 기다리지 않는다.
+     */
+    bell: sso && !!notifications,
   };
 }
 

@@ -1036,10 +1036,203 @@ function renderHeader(h) {
     parts.push('<button type="button" class="hdr-btn" id="btn-logout-top">로그아웃</button>');
   }
 
+  // 🔴 알림 종은 **줄의 맨 오른쪽**이다. 펼친 목록이 종에 오른쪽 끝을 맞춰
+  //    왼쪽으로 펼쳐지므로(style.css 의 .bell-panel{right:0}), 가운데쯤에 앉으면
+  //    좁은 화면에서 목록 왼쪽이 화면 밖으로 잘린다. 개선요청(dss-improvements)의
+  //    종도 같은 셈으로 같은 자리에 있다 — 시스템을 오가는 사람이 늘 같은 자리에서
+  //    찾는다.
+  //
+  // 🔴 **알림이 없어도 그린다.** 종은 머리말을 그린 **뒤에** 따로 채워지는데,
+  //    그때 자리가 새로 생기면 오른쪽에 붙어 있는 이 칸(.topbar-right 의
+  //    margin-left:auto)의 단추들이 통째로 왼쪽으로 밀린다 — 막 누르려던
+  //    「로그아웃」이 손 밑에서 옮겨 간다. 자리를 미리 비워 두면 숫자만 나중에
+  //    들어온다. (공용 묶음 @dss/ui 의 종은 비면 사라지지만, 그쪽은 서버가 다 그려
+  //    내려보내 늦게 나타나는 일이 없다. A/S 의 종은 여기와 같이 빈 종도 그린다.)
+  if (HEADER.bell) parts.push(bellMarkup());
+
   box.innerHTML = parts.join('');
   box.hidden = !parts.length;
   const out = $('#btn-logout-top');
   if (out) out.onclick = doLogout;
+
+  const bell = $('#bell');
+  if (bell) {
+    paintBell();                                   // 먼저 「불러오는 중」을 그려 둔다
+    bell.addEventListener('toggle', onBellToggle);
+    $('#bell-panel').addEventListener('click', onBellClick);
+    // 🔴 기다리지 않는다. 포털이 느려도 머리말은 이미 다 그려져 있다.
+    loadBell();
+  }
+}
+
+/* ========== 알림 종 — 다른 시스템의 알림을 머리말에서 본다 ========== */
+/*
+ * 🔵 이 시스템에는 아직 **제 알림이 없다.** 여기 뜨는 것은 전부 남의 시스템이
+ *    만든 알림이고, 포털이 모아 준 것을 우리 서버가 받아 넘겨 준다
+ *    (tools/notify.js · /api/notifications).
+ *
+ * 🔴 **화면은 포털을 직접 부르지 않는다.** 부르려면 우리 비밀값을 브라우저에
+ *    줘야 한다. 이 파일이 아는 주소는 우리 서버의 창구 둘뿐이다.
+ *
+ * 🔴 **첫 그림을 막지 않는다.** 머리말을 다 그린 뒤에 따로 부른다(위 renderHeader
+ *    끝의 loadBell). 포털이 느리면 종만 늦게 채워질 뿐 화면은 제때 뜬다.
+ */
+let BELL = { items: [], count: 0, degraded: false, loaded: false, busy: false };
+
+// 🔴 이 창에서 ✕ 로 지운 열쇠. 지움은 포털에 적히지만 포털은 제 답을 잠깐 담아
+//    두므로(캐시), 지운 직후 다시 물으면 그 줄이 그대로 돌아올 수 있다. 그때 다시
+//    그리면 「지웠는데 살아난다」가 된다 — 그래서 이 창이 사는 동안은 여기 든
+//    열쇠를 늘 뺀다. 새로 열면 포털의 답이 기준이다.
+const BELL_GONE = new Set();
+
+function bellMarkup() {
+  // <details> 라서 펼치고 접는 일을 브라우저가 한다 — 시스템 목록과 같은 모양이다.
+  return '<details class="bell" id="bell">' +
+    '<summary class="hdr-btn" title="알림">' +
+      '<svg class="bell-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' +
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/>' +
+        '<path d="M13.73 21a2 2 0 0 1-3.46 0"/>' +
+      '</svg>' +
+      '<span class="bell-badge" id="bell-badge" hidden></span>' +
+      // 🔴 낭독기가 읽을 이름. 종은 그림 하나짜리 단추라 글자를 실을 자리가 없고,
+      //    이름이 없으면 「단추」 하나로만 읽힌다. CSS 가 눈에서만 감춘다.
+      '<span class="bell-name" id="bell-name">알림</span>' +
+    '</summary>' +
+    '<div class="bell-panel" id="bell-panel"></div>' +
+  '</details>';
+}
+
+function bellRow(i) {
+  const meta = [];
+  // 종류 이름·보낸 시스템 이름이 빈 채로 오는 일이 있다. 그때는 그 칸만 안 그린다.
+  if (i.kindLabel) meta.push('<span class="bell-kind">' + esc(i.kindLabel) + '</span>');
+  if (i.sourceName) meta.push('<span class="bell-src">' + esc(i.sourceName) + '</span>');
+  return '<li class="bell-item">' +
+    // 주소는 **받은 그대로** 나간다. 앞에 무엇도 붙이지 않는다 — 다른 시스템의
+    // 절대 주소이고, 그릴 수 없는 주소는 서버가 이미 걸렀다(tools/notify.js).
+    '<a class="bell-link" href="' + esc(i.href) + '">' +
+      (meta.length ? '<span class="bell-meta">' + meta.join('') + '</span>' : '') +
+      '<span class="bell-line">' +
+        '<span class="bell-subject">' + esc(i.subject) + '</span>' +
+        (i.detail
+          ? '<span class="bell-dot" aria-hidden="true">·</span>' +
+            '<span class="bell-detail">' + esc(i.detail) + '</span>'
+          : '') +
+      '</span>' +
+    '</a>' +
+    // 🔴 ✕ 는 **링크 밖**이다(<li> 의 직계 자식). 안에 두면 ✕ 를 누른 것이
+    //    「줄을 눌렀다」로도 읽혀, 지우면서 그 화면으로 떠나 버린다.
+    // 🔴 type="button" — 기본값이 submit 이라, 언젠가 이 종이 <form> 안에 앉으면
+    //    누르는 순간 그 폼이 보내진다.
+    // 이름은 눈에 안 보이므로 aria-label 로 **무엇을 지우는지**까지 읽힌다 —
+    // 같은 모양의 ✕ 가 줄 수만큼 서 있기 때문이다.
+    '<button type="button" class="bell-x" data-key="' + esc(i.key) + '" ' +
+      'aria-label="' + esc(i.subject) + ' 알림 지우기">✕</button>' +
+  '</li>';
+}
+
+function paintBell() {
+  const panel = $('#bell-panel');
+  if (!panel) return;
+
+  const all = BELL.items || [];
+  const rows = all.filter(i => i && !BELL_GONE.has(i.key));
+
+  // 🔴 숫자는 **서버가 준 것**이다(포털이 센 값) — 줄 수로 다시 세지 않는다.
+  //    세는 규칙은 시스템마다 달라서, 여기서 다시 세면 그 시스템의 종과 이 종이
+  //    서로 다른 숫자를 말하게 된다. 다만 이 창에서 ✕ 로 지운 만큼은 뺀다 —
+  //    받아 온 수는 지우기 전의 수다.
+  const n = Math.max(0, (BELL.count || 0) - (all.length - rows.length));
+  const badge = $('#bell-badge');
+  if (badge) {
+    // 🔴 0 이면 배지를 안 그린다. "0" 이라고 적힌 배지는 할 일이 있는 것처럼
+    //    눈에 띄기만 한다. 세 자리가 넘으면 종이 길어지므로 99+ 로 줄인다.
+    badge.textContent = n > 99 ? '99+' : String(n);
+    badge.hidden = !(n > 0);
+  }
+  const name = $('#bell-name');
+  // 낭독기는 개수까지 읽어야 열어 보지 않고도 안다.
+  if (name) name.textContent = n > 0 ? '알림 ' + n + '건' : '알림';
+
+  const parts = [];
+  if (!BELL.loaded) {
+    parts.push('<p class="bell-note">불러오는 중…</p>');
+  } else if (BELL.degraded) {
+    // 🔴 **「못 불러왔다」는 「없다」와 다른 말이다.** 조용히 적은 수를 보여 주면
+    //    사람은 그게 전부인 줄 안다. 그래서 줄이 있든 없든 반드시 말한다.
+    parts.push('<p class="bell-note bell-warn">' + (rows.length
+      ? '일부 시스템의 알림을 불러오지 못했습니다 — 아래가 전부가 아닐 수 있습니다.'
+      : '알림을 불러오지 못했습니다.') + '</p>');
+  }
+  if (rows.length) {
+    parts.push('<ul class="bell-list">' + rows.map(bellRow).join('') + '</ul>');
+  } else if (BELL.loaded && !BELL.degraded) {
+    parts.push('<p class="bell-note">새 알림이 없습니다.</p>');
+  }
+  panel.innerHTML = parts.join('');
+}
+
+async function loadBell() {
+  if (BELL.busy) return;
+  BELL.busy = true;
+  try {
+    const f = await api('/api/notifications');
+    BELL.items = Array.isArray(f.items) ? f.items : [];
+    BELL.count = typeof f.count === 'number' ? f.count : 0;
+    BELL.degraded = f.degraded === true;
+  } catch {
+    // 🔴 서버에 못 닿은 것도 「못 불러왔다」다. 조용히 0건으로 두지 않는다.
+    BELL.degraded = true;
+  }
+  BELL.loaded = true;
+  BELL.busy = false;
+  paintBell();
+}
+
+function onBellToggle(e) {
+  // 펼칠 때마다 다시 묻는다. 이 화면은 하루 종일 열어 두는 창이라, 들어올 때 한
+  // 번만 물으면 종이 아침 상태에서 멈춘다. 사람이 누를 때만 묻는 것이라 포털을
+  // 두드리는 횟수가 저절로 눌린다 — 그래서 타이머를 두지 않았다.
+  if (e.target && e.target.open) loadBell();
+}
+
+function onBellClick(e) {
+  const x = e.target.closest && e.target.closest('.bell-x');
+  if (!x) return;
+  // 🔴 여기서 멈춰 세운다. 아래 바깥 클릭 처리기는 "누른 자리가 종 안인가"를
+  //    보는데, 바로 다음 줄에서 그 줄을 지워 버리므로 누른 단추가 이미 문서에서
+  //    떨어져 나가 "바깥을 눌렀다"로 읽힌다 — ✕ 한 번에 종이 통째로 접힌다.
+  e.preventDefault();
+  e.stopPropagation();
+  dismissBell(x.dataset.key);
+}
+
+/*
+ * ✕ — 「이 알림은 그만 보겠다」를 포털에 적는다(우리 서버를 거친다).
+ *
+ * 먼저 눈에서 치우고 나중에 적는다. 누른 결과가 바로 보여야 하기 때문이다.
+ */
+async function dismissBell(key) {
+  if (!key || BELL_GONE.has(key)) return;
+  BELL_GONE.add(key);
+  paintBell();
+
+  let ok = false;
+  try {
+    const r = await post('/api/notifications/dismiss', { keys: [key] });
+    ok = !!(r && r.ok);
+  } catch {
+    ok = false;
+  }
+  if (!ok) {
+    // 🔴 못 적었으면 **되살린다.** 지운 줄 알고 넘어가면 그 알림은 이 창에서만
+    //    사라지고 다음에 다시 떠서 두 번 놀란다. 다시 눌러도 안전하다 — 같은
+    //    열쇠를 두 번 지우는 것은 한 번 지우는 것과 같다.
+    BELL_GONE.delete(key);
+    paintBell();
+    toast('알림을 지우지 못했습니다. 다시 눌러 주세요.', true);
+  }
 }
 
 async function initHeader() {
@@ -1054,13 +1247,20 @@ async function initHeader() {
 
 // <details> 는 바깥을 눌러도, Esc 를 눌러도 저절로 접히지 않는다. 그 둘만
 // 얹는다 — 얹은 것이라 이 줄들이 없어도 펼침·접힘·링크는 그대로 돈다.
+// 머리말의 <details> 는 둘이다 — 시스템 목록과 알림 종.
+const POPOVERS = ['#svc-menu', '#bell'];
 document.addEventListener('click', e => {
-  const d = $('#svc-menu');
-  if (d && d.open && !d.contains(e.target)) d.open = false;
+  for (const sel of POPOVERS) {
+    const d = $(sel);
+    if (d && d.open && !d.contains(e.target)) d.open = false;
+  }
 });
 document.addEventListener('keydown', e => {
-  const d = $('#svc-menu');
-  if (e.key === 'Escape' && d && d.open) d.open = false;
+  if (e.key !== 'Escape') return;
+  for (const sel of POPOVERS) {
+    const d = $(sel);
+    if (d && d.open) d.open = false;
+  }
 });
 
 /*

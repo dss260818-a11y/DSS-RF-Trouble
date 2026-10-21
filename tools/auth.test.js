@@ -1,7 +1,7 @@
 // 로그인 쿠키 · 관문 시험 — Node 에 들어 있는 시험 틀(node --test)로 돈다.
 // 의존성을 늘리지 않으려고 고른 방식이다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js
 //
 // 🔴 data/ 를 건드리지 않는다. createAuth 는 dataDir 에 .session-secret 을 쓰므로
 //    시험마다 임시 폴더를 새로 만들고 끝나면 지운다.
