@@ -8,6 +8,7 @@ const { createBackup } = require('./tools/backup');
 const { rebuild: rebuildWorklog } = require('./tools/build-worklog');
 const { local, mapped } = require('./tools/paths');
 const { createAuth } = require('./tools/auth');
+const { readSsoConfig, createSso } = require('./tools/sso');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
 const { msgSentTime } = require('./tools/msg-date');
 
@@ -33,9 +34,16 @@ const WANT_HOST = process.env.HOST || CFG.host || '127.0.0.1';
 fs.mkdirSync(DATA, { recursive: true });
 
 /* ================= 접속 범위 · 로그인 ================= */
-// 다른 PC 에서 들어오게(0.0.0.0) 하려면 팀 비밀번호가 있어야 한다. 비밀번호 없이
-// 0.0.0.0 을 적어 두면 사내망 누구나 고치고 지울 수 있으므로 이 PC 로만 묶는다.
-const AUTH = createAuth({ password: process.env.TEAM_PASSWORD, dataDir: DATA });
+// 들어오는 길은 두 가지다 — 팀 공용 비밀번호(TEAM_PASSWORD)와 통합 로그인(SSO_*).
+// 🔴 둘 다 켜 두면 비밀번호만 알아도 들어올 수 있다. 그래도 남겨 둔 까닭은
+//    tools/auth.js 머리말에 적어 두었다(되돌릴 자리).
+//
+// 다른 PC 에서 들어오게(0.0.0.0) 하려면 둘 중 하나는 켜져 있어야 한다. 아무
+// 로그인 없이 0.0.0.0 을 적어 두면 사내망 누구나 고치고 지울 수 있으므로
+// 이 PC 로만 묶는다.
+const SSO_CFG = readSsoConfig(process.env);
+const AUTH = createAuth({ password: process.env.TEAM_PASSWORD, dataDir: DATA, ssoEnabled: SSO_CFG.enabled });
+const SSO = createSso({ config: SSO_CFG, auth: AUTH });
 const LOOPBACK = h => h === '127.0.0.1' || h === 'localhost' || h === '::1';
 const HOST = (!LOOPBACK(WANT_HOST) && !AUTH.enabled) ? '127.0.0.1' : WANT_HOST;
 const HOST_DOWNGRADED = HOST !== WANT_HOST;
@@ -828,20 +836,47 @@ const server = http.createServer(async (req, res) => {
   const p = u.pathname;
 
   try {
-    /* ---- 로그인 (팀 비밀번호가 설정된 경우만) ---- */
+    /* ---- 로그인 (팀 비밀번호 · 통합 로그인) ---- */
     if (p === '/api/health') return send(res, 200, { ok: true });
 
+    // 로그인 화면이 어떤 단추를 보일지 정하는 데만 쓴다. 로그인 전에 열려야 하므로
+    // 켜짐/꺼짐 두 값 말고는 아무것도 담지 않는다(주소·번호는 담지 않는다).
+    if (p === '/api/login-options') {
+      return send(res, 200, { password: AUTH.passwordEnabled, sso: SSO.enabled });
+    }
+
     if (p === '/api/login' && req.method === 'POST') {
+      // 로그인이 아예 꺼져 있을 때(이 PC 전용)는 예전처럼 그냥 통과시킨다.
       if (!AUTH.enabled) return send(res, 200, { ok: true });
       const b = await body(req);
+      // 통합 로그인만 켜 둔 경우 AUTH.login 이 거절한다(비밀번호 길이 닫혀 있다).
       const r = AUTH.login(req.socket.remoteAddress || '', String(b.password || ''));
       if (!r.ok) return send(res, r.locked ? 429 : 401, r);
       res.setHeader('Set-Cookie', AUTH.setCookie());
       return send(res, 200, { ok: true });
     }
     if (p === '/api/logout' && req.method === 'POST') {
-      res.setHeader('Set-Cookie', AUTH.clearCookie());
+      // 시스템 목록 쿠키도 함께 지운다. 남겨 두면 공용 PC 에서 앞사람의 목록이
+      // 뒷사람 화면에 남는다.
+      res.setHeader('Set-Cookie', [AUTH.clearCookie(), AUTH.clearServicesCookie()]);
       return send(res, 200, { ok: true });
+    }
+
+    /* ---- 통합 로그인 왕복 (포털이 꺼져 있으면 이 길 자체가 없다) ---- */
+    if (p === '/api/sso/start' && req.method === 'GET') {
+      if (!SSO.enabled) { res.writeHead(404); return res.end('not found'); }
+      const s = SSO.start();
+      res.writeHead(302, { Location: s.url, 'Set-Cookie': s.setCookie, 'Cache-Control': 'no-store' });
+      return res.end();
+    }
+    if (p === '/api/sso/callback' && req.method === 'GET') {
+      if (!SSO.enabled) { res.writeHead(404); return res.end('not found'); }
+      const r = await SSO.callback(req, Object.fromEntries(u.searchParams));
+      // 303: 포털이 보낸 GET 을 그대로 따라가게 둔다. 상대 주소로 돌려보내는 것은
+      // 브라우저가 제가 쓴 주소를 기준으로 풀기 때문이다 — 서버가 제 주소를 잘못
+      // 짐작해 엉뚱한 호스트로 보내는 일이 없다.
+      res.writeHead(303, { Location: r.location, 'Set-Cookie': r.setCookies, 'Cache-Control': 'no-store' });
+      return res.end();
     }
     // 로그인 화면도 회사 로고·배경을 써야 하므로 /img/ 는 로그인 없이 연다 (사진 두 장뿐)
     if (AUTH.enabled && p !== '/login.html' && !p.startsWith('/img/') && !AUTH.check(req)) {
@@ -1192,10 +1227,22 @@ server.listen(PORT, HOST, () => {
   console.log('  └──────────────────────────────────────────────┘');
   console.log('');
   console.log('   주소 :', url + (LOOPBACK(HOST) ? '  (이 PC 에서만)' : `  (사내망 접속 허용 · ${HOST})`));
-  console.log('   로그인 :', AUTH.enabled ? '팀 비밀번호 (TEAM_PASSWORD)' : '없음');
+  const 길 = [];
+  if (SSO.enabled) 길.push('통합 로그인 (SSO_*)');
+  if (AUTH.passwordEnabled) 길.push('팀 비밀번호 (TEAM_PASSWORD)');
+  console.log('   로그인 :', 길.length ? 길.join(' + ') : '없음');
+  if (SSO.enabled && AUTH.passwordEnabled) {
+    console.log('     ※ 두 길이 함께 켜져 있습니다 — 팀 비밀번호만 알아도 들어올 수 있습니다.');
+    console.log('       통합 로그인만 쓰려면 TEAM_PASSWORD 를 비우고 다시 켜 주세요.');
+  }
+  // 반쯤 채워 둔 설정은 조용히 꺼진 채로 돌아간다. 무엇이 빠졌는지 여기서 알린다.
+  if (!SSO.enabled && !SSO_CFG.off && SSO_CFG.missing.length && SSO_CFG.missing.length < 4) {
+    console.log('   ※ 통합 로그인 설정이 덜 찼습니다 — 빠진 값 :', SSO_CFG.missing.join(', '));
+  }
+  if (SSO_CFG.off) console.log('   ※ 통합 로그인은 SSO=off 로 꺼 두었습니다.');
   if (HOST_DOWNGRADED) {
-    console.log(`   ※ 설정은 ${WANT_HOST} 이지만 TEAM_PASSWORD 가 없어 이 PC(127.0.0.1)로만 엽니다.`);
-    console.log('     다른 PC 에서 쓰려면 .env 에 TEAM_PASSWORD=... 를 넣고 다시 켜 주세요.');
+    console.log(`   ※ 설정은 ${WANT_HOST} 이지만 로그인이 꺼져 있어 이 PC(127.0.0.1)로만 엽니다.`);
+    console.log('     다른 PC 에서 쓰려면 .env 에 TEAM_PASSWORD=... 를 넣거나 통합 로그인을 켜고 다시 시작해 주세요.');
   }
   console.log('   자료 열기 :', DESKTOP ? '이 PC 화면에서 바로 열기' : '브라우저로 내려받기 + 경로 복사' +
               (mapped() ? ' (공유폴더 경로 매핑 사용)' : ''));
