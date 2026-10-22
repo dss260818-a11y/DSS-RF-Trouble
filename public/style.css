@@ -44,7 +44,12 @@ code{font-family:Consolas,"D2Coding",monospace;font-size:.92em;background:var(--
   content:"";position:absolute;left:0;right:0;bottom:0;height:2px;
   background:linear-gradient(90deg,transparent,#f2c14e 30%,#4da3ff 70%,transparent);opacity:.75;
 }
-.brand{display:flex;align-items:center;gap:16px}
+/* 🔴 **flex-wrap 이 모양이 아니라 울타리다.** 그 전까지 이 줄은 줄바꿈도 스크롤도
+   없는 한 줄이어서, 폭이 모자라면 칸이 **글자 폭(min-content = 한글 한 자)까지**
+   줄어들었다 — 폰(360~430px)에서 제목이 「기 / 술 / 이 / 슈」처럼 세로로 쪼개져
+   화면 높이의 절반을 먹었다. 이제는 찌그러지는 대신 **줄을 바꾼다.**
+   (사내 다른 시스템 넷이 같은 증상이었고 같은 방법으로 고쳤다.) */
+.brand{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;min-width:0}
 .logo{
   flex:0 0 auto;background:#fff;border-radius:8px;padding:4px 10px;
   display:grid;place-items:center;box-shadow:0 2px 10px rgba(0,0,0,.3);
@@ -52,9 +57,19 @@ code{font-family:Consolas,"D2Coding",monospace;font-size:.92em;background:var(--
 .logo img{display:block;height:40px;width:auto}
 a.logo{cursor:pointer;transition:transform .15s,box-shadow .15s}
 a.logo:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(242,193,78,.45)}
-.brand h1{font-size:18px;font-weight:700;color:#fff;letter-spacing:-.2px}
+/* 제목 묶음. 🔴 min-width:0 이 있어야 이 칸이 **줄어들 수 있고**, 그래야 flex 가
+   「못 줄이니 글자를 꺾자」로 가지 않는다. 그 대신 안쪽 글자에 줄바꿈 금지를 준다. */
+.brand-text{flex:1 1 auto;min-width:0}
+/* 🔴 white-space:nowrap 은 **찌그러짐의 진짜 해법**이다. 글자가 안 꺾이면 이 칸의
+   min-content 가 낱말 전체 폭이 되어 한 자 폭까지 줄어들 수가 없다. 그래도 자리가
+   모자라면 위 .brand 의 flex-wrap 이 줄을 바꾸고, 그래도 모자라면 … 로 줄인다. */
+.brand h1{font-size:18px;font-weight:700;color:#fff;letter-spacing:-.2px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .brand h1 .rf{color:#f2c14e}
-.brand p{margin:2px 0 0;font-size:12px;color:#a9c4ee}
+/* 「지식 0건 · 자료 0건 · 이슈 0건 · 색인 없음」. 제목과 같은 까닭으로 줄바꿈을 막는다 —
+   여기도 세로로 흘렀다. */
+.brand p{margin:2px 0 0;font-size:12px;color:#a9c4ee;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .tabs{display:flex;gap:2px;margin-top:12px;overflow-x:auto;scrollbar-width:none}
 .tab{
   background:none;border:0;border-bottom:3px solid transparent;
@@ -69,7 +84,14 @@ a.logo:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(242,193,78,.4
    설정과 상관없이 늘 남색 띠인데(.topbar 참조), 변수를 쓰면 라이트 모드에서
    이 칸들만 하얘져 띠 위에 글자가 묻힌다. 위 .tab 들이 #fff 를 그대로 적어
    둔 것과 같은 까닭이다. */
-.topbar-right{margin-left:auto;display:flex;align-items:center;gap:6px}
+/* 🔴 flex-shrink:0 — 이 줄에서 눌려도 되는 것은 제목 글자뿐이다. 없으면 좁은 폭에서
+   단추들이 깎여 손가락에 안 잡히는 크기가 되고 「사내 시스템」이 세로로 선다. */
+.topbar-right{margin-left:auto;display:flex;align-items:center;gap:6px;flex:0 0 auto}
+/* [통합 로그인으로]·[로그아웃] 묶음. 🔵 **넓은 화면에서만** 여기 선다 — 좁은 화면에서는
+   아래 @media 가 이 묶음을 감추고, 같은 것이 ☰ 서랍 안(.drawer-links)에 선다.
+   🔴 두 자리가 같은 HEADER 하나에서 온다(public/app.js 의 renderHeader). 목록을 두
+      벌로 적지 않는 것이 규칙이다 — 베낀 쪽은 고칠 때 잊힌다. */
+.hdr-wide{display:inline-flex;align-items:center;gap:6px}
 /* 🔴 display 를 적어 둔 칸은 hidden 만으로 안 숨는다 — 브라우저 기본값
    [hidden]{display:none} 보다 이 규칙이 세다. 그릴 것이 하나도 없을 때
    (로그인이 꺼진 이 PC 전용 모드) 빈 칸이 남지 않게 한다. */
@@ -172,13 +194,101 @@ a.svc-item:hover{background:#13264a}
 }
 .bell-x:hover{background:rgba(229,72,77,.2);color:#ff9ea1}
 
+/* ---------- ☰ 서랍 — 좁은 화면에서 화면 메뉴와 로그인 단추가 드는 곳 ---------- */
+/* 🔴 여기도 색 변수를 쓰지 않는다 — 까닭은 위 .topbar-right 주석에 있다.
+   🔴 서랍은 **좁은 화면 전용**이다. 아래 @media 가 켜 주기 전까지 통째로 없다 —
+      그래서 넓은 화면은 예전과 한 글자도 다르지 않다. */
+.drawer{display:none;flex:0 0 auto;position:relative}
+/* 🔴 기본 삼각형(▶)은 두 가지를 **둘 다** 꺼야 사라진다 — list-style:none 은
+   파이어폭스·크롬, ::-webkit-details-marker 는 사파리 몫이다. */
+.drawer>summary{
+  list-style:none;display:flex;align-items:center;justify-content:center;
+  width:34px;height:34px;border-radius:9px;cursor:pointer;user-select:none;
+  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.22);
+  color:rgba(255,255,255,.88);font-size:17px;line-height:1;
+}
+.drawer>summary::-webkit-details-marker{display:none}
+.drawer>summary:hover{color:#fff;border-color:rgba(242,193,78,.75);background:rgba(242,193,78,.12)}
+.drawer[open]>summary{color:#fff;border-color:rgba(242,193,78,.75)}
+/*
+ * 화면을 덮는 상자.
+ *
+ * 🔴 position:fixed 는 **화면**에 매달린다 — 머리말에 매달리지 않는다. 위 .topbar 는
+ *    sticky 지만 sticky 는 fixed 의 기준(containing block)을 만들지 않으므로(그것을
+ *    만드는 것은 transform·filter·contain 같은 것들이다) 머리말 안에 적어도 화면
+ *    전체를 덮는다. 🔴 .topbar 나 그 조상에 transform 을 더하면 이 서랍이 조용히
+ *    머리말 안으로 갇힌다.
+ *
+ * 🔴 z-index:40 은 **실제로 세어** 정한 값이다(2026-10-22, 이 파일의 z-index 전부):
+ *      .topbar 20(sticky+z 라 여기가 **쌓임 맥락**이다) · .svc-list 30 · .bell-panel 30
+ *      · .modal 50 · .toast 99
+ *    서랍은 머리말 **안**이라 30 둘과만 겨룬다 — 그 둘보다 위여야 펼쳐진 시스템 목록
+ *    위로 덮인다. 바깥(.modal 50 · .toast 99)과는 머리말의 20 하나로 겨루므로 팝업과
+ *    알림 띠는 서랍보다 위다 — 그래야 맞다.
+ *    🔴 .svc-list / .bell-panel 의 30 을 올리는 날에는 **이 값도 함께 올려야 한다.**
+ */
+.drawer-sheet{position:fixed;inset:0;z-index:40;display:flex}
+/* 검은 바탕. <button> 이어야 하는 까닭은 index.html 의 그 자리 주석에 있다. */
+.drawer-scrim{
+  position:absolute;inset:0;width:100%;height:100%;
+  margin:0;padding:0;border:0;background:rgba(0,0,0,.5);cursor:pointer;
+}
+/* 서랍 본체 — 왼쪽에서 나온다.
+   🔵 overflow-y:auto — 가로로 눕힌 폰에서는 메뉴가 화면보다 길다.
+      overscroll-behavior:contain 은 끝까지 민 스크롤이 뒤 페이지로 새는 것을 막는다.
+   🔴 아래쪽 안전 여백 — 서랍이 화면 높이를 꽉 채우므로, 없으면 맨 아래 칸(로그아웃)이
+      홈 인디케이터에 겹쳐 눌리지 않는다. 패딩과 인셋은 **한 값 안에서** 더한다 —
+      따로 두면 같은 padding-bottom 을 두 규칙이 다투고 지는 날 조용히 사라진다.
+      인셋이 0인 기기에서는 정확히 12px 이다. */
+.drawer-panel{
+  position:relative;z-index:1;display:flex;flex-direction:column;
+  width:256px;max-width:82vw;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  padding:12px 12px calc(12px + env(safe-area-inset-bottom,0px));
+  background:#0c1b36;border-right:1px solid #1f3763;box-shadow:0 0 40px rgba(0,0,0,.55);
+}
+.drawer-menu{display:flex;flex-direction:column;gap:2px}
+/* 위 .tab 을 **세로로 세운 것**이다 — 가는 곳도 차례도 같다(public/app.js 의 buildDrawerMenu). */
+.drawer-item{
+  display:block;width:100%;text-align:left;
+  background:none;border:0;border-radius:8px;padding:11px 12px;
+  color:rgba(255,255,255,.78);font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap;
+}
+.drawer-item:hover{background:#13264a;color:#fff}
+/* 지금 보고 있는 화면. 넓은 화면의 .tab.active 가 금빛 밑줄인 것과 같은 뜻을 왼쪽 선으로 낸다. */
+.drawer-item.active{color:#fff;background:rgba(242,193,78,.14);box-shadow:inset 3px 0 0 #f2c14e}
+/* 빈 칸막이 — 아래 묶음을 바닥에 붙인다. 내용이 길어지면 높이 0 으로 줄어든다.
+   🔵 margin-top:auto 가 아닌 까닭: 메뉴가 서랍보다 길어지는 순간 auto 가 0 으로 풀려
+      아래 묶음의 간격이 **가장 필요한 때에** 사라진다. 칸막이는 두 경우가 모두 옳다. */
+.drawer-grow{flex:1 1 auto;min-height:12px}
+.drawer-links{
+  display:flex;flex-direction:column;gap:8px;
+  margin-top:12px;padding-top:12px;border-top:1px solid #1f3763;
+}
+/* 🔴 display 를 적어 둔 칸은 hidden 만으로 안 숨는다(위 .topbar-right 와 같은 까닭). */
+.drawer-links[hidden]{display:none}
+.drawer-links .hdr-btn{justify-content:center}
+
 @media (max-width:640px){
-  .topbar{padding:10px 16px 0}
-  .logo img{height:30px}
+  /* 🔴 아래 패딩이 0 에서 10px 이 됐다. 이 폭에서는 탭 줄(.tabs)이 통째로 서랍으로
+     들어가 머리말의 마지막 줄이 .brand 가 되는데, 0 이면 글자가 금빛 밑선에 붙는다. */
+  .topbar{padding:10px 16px 10px}
+  /* 로고를 줄인다 — 원본이 294×84 라 높이 30px 이면 105px 을 먹어, 이 폭에서는
+     제목이 설 자리가 없어 줄이 하나 더 생긴다. 지우지는 않는다(통합검색으로 가는 길). */
+  .logo img{height:24px}
+  .logo{padding:3px 7px}
   .brand h1{font-size:15px}
+  .brand p{font-size:11.5px}
+  .brand{gap:6px 8px}
   .topbar-right{gap:4px}
   .hdr-btn{padding:5px 9px;font-size:11.5px}
   .bell>summary{padding:5px 8px}
+  /* ── 여기부터가 「나머지를 전부 ☰ 안으로」다 ───────────────────────────
+     🔴 .tabs 는 **감출 뿐 지우지 않는다.** 서랍의 메뉴를 누르면 app.js 가 여기 있는
+        진짜 단추를 대신 눌러 주므로(src.click()), 이 줄이 DOM 에 남아 있어야 한다.
+        display:none 인 단추도 코드로 누르는 것은 그대로 먹는다. */
+  .tabs{display:none}
+  .hdr-wide{display:none}
+  .drawer{display:block}
 }
 
 main{

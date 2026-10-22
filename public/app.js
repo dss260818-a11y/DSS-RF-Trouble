@@ -44,12 +44,56 @@ let META = {}, ISSUES = [], EDITING = null;
 $$('.tab').forEach(b => b.onclick = () => {
   $$('.tab').forEach(x => x.classList.toggle('active', x === b));
   $$('.panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + b.dataset.tab));
+  // ☰ 서랍 안의 같은 칸에도 「지금 여기」를 옮긴다. 서랍은 좁은 화면에서 이 줄을
+  // 대신하는 자리라, 안 맞추면 서랍을 열 때마다 아침에 보던 화면이 켜져 있다.
+  syncDrawerMenu(b.dataset.tab);
   if (b.dataset.tab === 'map') loadMap();
   if (b.dataset.tab === 'issues') renderIssues();
   if (b.dataset.tab === 'weekly') renderWeekly();
   if (b.dataset.tab === 'trips') renderTrips();
   if (b.dataset.tab === 'settings') renderSettings();
 });
+
+/* ================= ☰ 서랍 안의 화면 메뉴 ================= */
+/*
+ * 🔴 **목록을 여기 적지 않는다.** 위 <nav class="tabs"> 의 단추를 그대로 본떠
+ *    세운다 — 화면 메뉴의 목록은 index.html 한 곳뿐이고, 거기 칸을 더하면 서랍에도
+ *    저절로 따라 선다. 두 벌로 적어 두면 한쪽만 고쳐지고 **그 어긋남은 아무 오류도
+ *    내지 않는다**(폰과 컴퓨터가 서로 다른 메뉴를 그린다).
+ *
+ * 🔴 **일은 원래 단추가 한다.** 서랍의 칸은 짝이 되는 .tab 을 대신 눌러 줄 뿐이라,
+ *    탭을 바꿀 때 할 일(loadMap · renderIssues …)이 위 한 곳에만 적혀 있다. 여기에
+ *    같은 분기를 또 적으면 새 탭을 더하는 날 서랍에서만 빈 화면이 뜬다.
+ *
+ * 🔵 좁은 화면에서 .tabs 는 **감춰져 있을 뿐 DOM 에 그대로 있다**(style.css).
+ *    display:none 인 단추도 코드로 누르는 것은 그대로 먹는다.
+ *
+ * 🔵 스크립트가 안 붙으면 서랍 안이 비지만, 탭은 원래 이 파일이 눌러 주는 것이라
+ *    스크립트 없이는 넓은 화면에서도 화면이 안 바뀐다 — 서랍이 새로 잃는 것은 없다.
+ */
+function buildDrawerMenu() {
+  const box = $('#drawer-menu');
+  if (!box) return;
+  const tabs = $$('.tabs .tab');
+  box.innerHTML = tabs.map(t =>
+    '<button type="button" class="drawer-item' +
+      (t.classList.contains('active') ? ' active' : '') +
+    '" data-tab="' + esc(t.dataset.tab) + '">' + esc(t.textContent) + '</button>'
+  ).join('');
+  // 한 칸씩 손잡이를 다는 대신 묶음에 하나만 단다 — 다시 그려도 손잡이가 안 떨어진다.
+  box.addEventListener('click', e => {
+    const hit = e.target.closest && e.target.closest('.drawer-item');
+    if (!hit) return;
+    const src = $('.tabs .tab[data-tab="' + hit.dataset.tab + '"]');
+    if (src) src.click();
+  });
+}
+
+function syncDrawerMenu(tab) {
+  $$('#drawer-menu .drawer-item').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+}
+
+buildDrawerMenu();
 // 회사 로고를 누르면 통합검색 화면으로
 $('.brand .logo').onclick = e => {
   e.preventDefault();
@@ -1023,18 +1067,36 @@ function renderHeader(h) {
       '</details>');
   }
 
-  // 🔴 주소는 서버가 설정(SSO_ISSUER)에서 읽어 준 것이다. 화면에 박지 않는다.
-  // 새 창으로 열지 않는다: 포털은 "다른 시스템으로 건너가는 자리" 라 보고 나면
-  // 그쪽에 머무는 곳이고, 새 창으로 띄우면 쓸모가 끝난 이 창이 뒤에 남아 쌓인다.
-  // 같은 창으로 가도 로그인은 끊기지 않으므로(세션 쿠키는 그대로다) 뒤로 가기
-  // 한 번이면 보던 화면으로 돌아온다.
-  if (HEADER.portalUrl) {
-    parts.push('<a class="hdr-btn" href="' + esc(HEADER.portalUrl) + '">통합 로그인으로</a>');
-  }
+  /*
+   * 「통합 로그인으로」 · 「로그아웃」.
+   *
+   * 🔴 주소는 서버가 설정(SSO_ISSUER)에서 읽어 준 것이다. 화면에 박지 않는다.
+   * 새 창으로 열지 않는다: 포털은 "다른 시스템으로 건너가는 자리" 라 보고 나면
+   * 그쪽에 머무는 곳이고, 새 창으로 띄우면 쓸모가 끝난 이 창이 뒤에 남아 쌓인다.
+   * 같은 창으로 가도 로그인은 끊기지 않으므로(세션 쿠키는 그대로다) 뒤로 가기
+   * 한 번이면 보던 화면으로 돌아온다.
+   *
+   * 🔴 **자리가 둘인데 목록은 하나다.** 넓은 화면은 머리말 오른쪽(.hdr-wide),
+   *    좁은 화면은 ☰ 서랍 안(.drawer-links) — 어느 쪽을 보일지는 style.css 의
+   *    @media 가 정하고, **그릴지 말지는 여기 HEADER 하나**가 정한다. 그래서
+   *    「로그인이 꺼져 있으면 로그아웃이 없다」 같은 판단이 두 벌이 되지 않는다.
+   * 🔵 id 는 넓은 화면 쪽에만 둔다 — 한 문서에 같은 id 가 둘이면 안 된다. 손잡이를
+   *    다는 쪽은 class(.js-logout)라 양쪽 다 걸린다.
+   */
+  const headerLinks = withId => {
+    const out = [];
+    if (HEADER.portalUrl) {
+      out.push('<a class="hdr-btn" href="' + esc(HEADER.portalUrl) + '">통합 로그인으로</a>');
+    }
+    if (HEADER.logout) {
+      out.push('<button type="button" class="hdr-btn js-logout"' +
+        (withId ? ' id="btn-logout-top"' : '') + '>로그아웃</button>');
+    }
+    return out;
+  };
 
-  if (HEADER.logout) {
-    parts.push('<button type="button" class="hdr-btn" id="btn-logout-top">로그아웃</button>');
-  }
+  const wide = headerLinks(true);
+  if (wide.length) parts.push('<span class="hdr-wide">' + wide.join('') + '</span>');
 
   // 🔴 알림 종은 **줄의 맨 오른쪽**이다. 펼친 목록이 종에 오른쪽 끝을 맞춰
   //    왼쪽으로 펼쳐지므로(style.css 의 .bell-panel{right:0}), 가운데쯤에 앉으면
@@ -1052,8 +1114,18 @@ function renderHeader(h) {
 
   box.innerHTML = parts.join('');
   box.hidden = !parts.length;
-  const out = $('#btn-logout-top');
-  if (out) out.onclick = doLogout;
+
+  // 좁은 화면 자리 — 같은 두 칸을 ☰ 서랍 안에 한 번 더 그린다(위 headerLinks 주석).
+  // 🔵 서랍 자체가 좁은 화면 전용이라 넓은 화면에서는 이 칸이 그려져도 보이지 않는다.
+  const drawerLinks = $('#drawer-links');
+  if (drawerLinks) {
+    const narrow = headerLinks(false);
+    drawerLinks.innerHTML = narrow.join('');
+    drawerLinks.hidden = !narrow.length;
+  }
+
+  // 🔴 id 가 아니라 class 로 집는다 — 로그아웃 단추는 두 자리에 있다.
+  $$('.js-logout').forEach(b => b.onclick = doLogout);
 
   const bell = $('#bell');
   if (bell) {
@@ -1247,8 +1319,12 @@ async function initHeader() {
 
 // <details> 는 바깥을 눌러도, Esc 를 눌러도 저절로 접히지 않는다. 그 둘만
 // 얹는다 — 얹은 것이라 이 줄들이 없어도 펼침·접힘·링크는 그대로 돈다.
-// 머리말의 <details> 는 둘이다 — 시스템 목록과 알림 종.
+// 머리말의 <details> 는 셋이다 — 시스템 목록 · 알림 종 · ☰ 서랍.
+// 🔴 서랍은 이 목록에 넣지 않는다. 펼쳐지면 검은 바탕이 화면을 통째로 덮어
+//    「바깥」이 남지 않으므로 아래 서랍 전용 규칙이 따로 본다.
 const POPOVERS = ['#svc-menu', '#bell'];
+// Esc 는 셋 모두에 듣는다 — 바깥을 누를 수 없는 키보드 사용자에게는 접을 유일한 길이다.
+const CLOSABLE = POPOVERS.concat('#drawer');
 document.addEventListener('click', e => {
   for (const sel of POPOVERS) {
     const d = $(sel);
@@ -1257,10 +1333,45 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
-  for (const sel of POPOVERS) {
+  for (const sel of CLOSABLE) {
     const d = $(sel);
     if (d && d.open) d.open = false;
   }
+});
+
+/*
+ * ☰ 서랍을 저절로 접는 두 규칙. 여닫는 일 자체는 여전히 브라우저(<details>)가 한다 —
+ * 이 줄들이 없어도 ☰ 는 눌러서 열리고 다시 눌러 접힌다. 더해지는 것은 접히는 **때**뿐이다.
+ *
+ * 🔴 **바깥은 pointerdown 으로 듣는다.** click 으로 들으면 iOS 가 누를 것이 없는 빈
+ *    바탕의 click 을 문서까지 안 올려 보내, **PC 에서는 멀쩡한데 폰에서만 안 닫힌다.**
+ *    지금 고치는 것이 바로 폰 화면이므로 이 선택이 핵심이다(mousedown 은 손가락을
+ *    안 내는 기기가 있어 부족하다).
+ *    🔵 검은 바탕은 <details> **안**이라 여기 안 걸린다 — 아래 규칙이 접는다.
+ */
+document.addEventListener('pointerdown', e => {
+  const d = $('#drawer');
+  if (d && d.open && !d.contains(e.target)) d.open = false;
+});
+/*
+ * 🔴 **패널 안은 click 으로 듣는다.** pointerdown 에 접으면 눌린 링크·단추가 손을 떼기
+ *    전에 사라져(접힌 <details> 안쪽은 display:none 이다) **click 이 아예 안 난다** —
+ *    서랍만 닫히고 화면은 안 옮겨 가고 로그아웃도 안 눌린다. click 은 이미 눌리고 난
+ *    뒤에 오는 사건이라 그때 접어도 그 누름이 취소되지 않는다.
+ * 🔴 **a·button 이 아니면 접지 않는다.** 맨 글자나 빈 여백을 짚은 것은 가는 것이 아니고,
+ *    언젠가 서랍에 <select> 가 들면 펼치려 누른 것에 접혀 고를 수가 없게 된다.
+ * 🔴 **☰ 단추(summary) 자신은 어느 쪽으로도 접지 않는다.** 그때 접는 일은 브라우저가
+ *    하고 있고, 같이 접으면 그 누름이 다시 펼쳐 「안 닫히는 단추」가 된다.
+ * 🔵 preventDefault 도 stopPropagation 도 하지 않는다 — 듣기만 한다.
+ */
+document.addEventListener('click', e => {
+  const d = $('#drawer');
+  if (!d || !d.open || !d.contains(e.target)) return;
+  const btn = d.querySelector('summary');
+  if (btn && btn.contains(e.target)) return;
+  const hit = e.target.closest && e.target.closest('a, button');
+  // 🔴 찾은 것이 **이 서랍 안**인지까지 본다 — closest 는 머리말 위로도 올라간다.
+  if (hit && d.contains(hit)) d.open = false;
 });
 
 /*

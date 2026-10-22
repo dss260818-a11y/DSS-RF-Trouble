@@ -10,17 +10,58 @@
 
 <header class="topbar">
   <div class="brand">
+    <!-- ☰ 서랍 — 좁은 화면(640px 이하)에서만 선다. 넓은 화면에서는 style.css 가
+         이 <details> 를 통째로 display:none 으로 둔다.
+
+         🔴 **머리말 맨 왼쪽**이다 — 로고보다도 앞. 서랍이 왼쪽에서 나오므로 손잡이도
+            같은 쪽에 있어야 하고, 오른쪽 끝은 알림 종의 자리다(종의 펼친 목록이
+            오른쪽 끝에 맞춰 왼쪽으로 열린다 — style.css 의 .bell-panel{right:0}).
+         🔴 **<details>/<summary> 다 — 여닫는 일은 브라우저가 한다.** app.js 가
+            아직 안 붙었어도 ☰ 는 눌러서 열리고 다시 눌러 접힌다. app.js 가 얹는 것은
+            「저절로 접히는 때」(바깥 누르기 · 안의 단추 누르기 · Esc)뿐이다.
+         🔵 안에 든 것은 app.js 가 채운다 — 화면 메뉴는 아래 <nav class="tabs"> 의
+            단추를 그대로 본떠 세우고(buildDrawerMenu), 통합 로그인으로·로그아웃은
+            /api/header 가 알려 준 것에서 온다(renderHeader). 🔴 **목록을 여기 한 번
+            더 적지 마라** — 두 벌이 되면 한쪽만 고쳐지고 그 어긋남은 오류를 안 낸다. -->
+    <details class="drawer" id="drawer">
+      <!-- 🔴 aria-label 이 있어야 낭독기가 「메뉴」로 읽는다 — ☰ 는 그림 글자라
+           그냥 읽히면 뜻이 안 통한다(종의 .bell-name 과 같은 까닭). -->
+      <summary title="메뉴" aria-label="메뉴"><span aria-hidden="true">☰</span></summary>
+      <div class="drawer-sheet">
+        <!-- 검은 바탕. 🔴 **반드시 <button type="button"> 이다.**
+             · <button> 인 까닭: 서랍을 닫는 길이 「패널 안에서 a·button 을 눌렀을 때」라서
+               (app.js 의 서랍 접기), 평범한 <div> 로 두면 눌러도 아무 일이 없는데 오류도 안 난다.
+             · type="button" 인 까닭: 기본값이 submit 이라, 언젠가 이 서랍이 <form> 안에
+               앉는 날 누를 때마다 그 폼이 보내진다. -->
+        <button type="button" class="drawer-scrim" aria-label="메뉴 닫기"></button>
+        <div class="drawer-panel">
+          <nav class="drawer-menu" id="drawer-menu" aria-label="화면"></nav>
+          <!-- 빈 칸막이 — 아래 묶음을 서랍 **바닥**에 붙인다. 자리가 모자라면 높이 0 으로
+               줄어 예전과 같은 모양이 된다. 🔴 빈 칸이라고 지우지 마라. -->
+          <div class="drawer-grow" aria-hidden="true"></div>
+          <div class="drawer-links" id="drawer-links" hidden></div>
+        </div>
+      </div>
+    </details>
     <a class="logo" href="/" title="통합검색으로"><img src="/img/dss-logo.png" alt="(주)디에스에스 DSS Co., Ltd."></a>
-    <div>
+    <!-- 🔴 min-width:0 과 줄바꿈 금지가 style.css 의 .brand-text 에 붙어 있다. 없으면
+         좁은 화면에서 이 칸이 **글자 한 자 폭까지** 찌그러져 제목이 세로로 선다. -->
+    <div class="brand-text">
       <h1><span class="rf">RF</span> 기술이슈 관리 시스템</h1>
       <p id="stat-line">불러오는 중…</p>
     </div>
-    <!-- 사내 시스템 오가기 · 통합 로그인으로 · 로그아웃.
+    <!-- 사내 시스템 오가기 · 통합 로그인으로 · 로그아웃 · 알림 종.
          비어 있는 채로 시작해 /api/header 가 알려 준 것만 app.js 가 채운다
          (renderHeader). 무엇을 그릴지는 전부 tools/header.js 가 정한다 —
-         여기서도 app.js 에서도 판단하지 않는다. -->
+         여기서도 app.js 에서도 판단하지 않는다.
+         🔵 좁은 화면에서는 이 안의 「통합 로그인으로·로그아웃」 묶음(.hdr-wide)만
+            감춰지고 **같은 것이 ☰ 서랍 안에** 선다. 사내 시스템 ▾ 와 종은 좁은
+            화면에서도 여기 그대로 남는다(쓰는 분 요청 ①②). -->
     <div class="topbar-right" id="topbar-right" hidden></div>
   </div>
+  <!-- 🔴 화면 메뉴의 **유일한 목록**이다. 좁은 화면에서는 이 줄이 통째로 감춰지고,
+       app.js 가 **이 단추들을 그대로 본떠** ☰ 서랍 안에 세로로 세운다
+       (buildDrawerMenu). 여기에 칸을 더하면 서랍에도 저절로 따라 선다. -->
   <nav class="tabs">
     <button class="tab active" data-tab="search">통합검색</button>
     <button class="tab" data-tab="issues">이슈 관리</button>

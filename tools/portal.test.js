@@ -1,7 +1,7 @@
 // 포털이 **우리에게** 말을 거는 길의 시험 — Node 에 들어 있는 시험 틀로 돈다.
 // 끊어라 신호 · 알림 내주기 · 알림 설정(읽기 · 저장) 셋이다.
 //
-//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/notify.test.js tools/portal.test.js
+//   node --test tools/auth.test.js tools/sso.test.js tools/header.test.js tools/header-ui.test.js tools/notify.test.js tools/portal.test.js
 //
 // 🔴 시험 파일을 더하면 **이 줄에도 적어라.** 이 저장소에는 시험 목록을 들고
 //    있는 설정 파일이 없어서(의존성 0개 · package.json 없음) 여기 적힌 명령이
