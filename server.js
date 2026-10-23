@@ -14,7 +14,7 @@ const { createNotifier, bellFeed, feedPlan, dismissPlan } = require('./tools/not
 const { createRevocations } = require('./tools/revoked');
 const { createPortalGateway } = require('./tools/portal');
 const { buildIssueXlsx } = require('./tools/issue-xlsx');
-const { msgSentTime } = require('./tools/msg-date');
+const { msgSentTime, msgBody, msgRequest } = require('./tools/msg-date');
 
 // .env 를 읽어 환경변수에 채운다(AI API 키 등). 파일이 없어도 그냥 넘어간다.
 require('./tools/env').load();
@@ -1170,6 +1170,17 @@ const server = http.createServer(async (req, res) => {
         times[u] = f && /\.msg$/i.test(f.full) ? msgSentTime(f.full) : null;
       }
       return send(res, 200, { times });
+    }
+
+    // Kyosan 재촉 메일용: 올린 .msg 파일들의 요청 사항(맨 위 메일 본문에서 인사·서명 뺀 것) { upload: 글 | null }
+    if (p === '/api/msgrequests' && req.method === 'POST') {
+      const b = await body(req);
+      const texts = {};
+      for (const u of (Array.isArray(b.uploads) ? b.uploads : []).slice(0, 500)) {
+        const f = resolveDownload({ upload: u });
+        texts[u] = f && /\.msg$/i.test(f.full) ? (msgRequest(msgBody(f.full)) || null) : null;
+      }
+      return send(res, 200, { texts });
     }
 
     // 교산 재촉 메일용: 한국어 → 일본어 (Google 번역). 실패한 줄은 원문 그대로 돌려주고 failed 로 센다.

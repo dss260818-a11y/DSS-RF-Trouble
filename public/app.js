@@ -1537,9 +1537,9 @@ function wkHtml(D, mail) {
   </div>`;
 }
 
-// 조치 및 진행상황 줄들: 진행 이력(날짜순, 이번주 것은 week=true). 이력이 없으면 "원인 및 결과" 글로 대신한다.
+// 조치 및 진행상황: 진행 이력 중 최신 하나만(이번주 것이면 week=true). 이력이 없으면 "원인 및 결과" 글로 대신한다.
 function actLines(r) {
-  if (r.hist.length) return r.hist.map(p => ({ text: `${p.date ? mmdd(p.date) + ' ' : ''}${progLabel(p)}`, week: r.prog.includes(p) }));
+  if (r.hist.length) return r.hist.slice(-1).map(p => ({ text: `${p.date ? mmdd(p.date) + ' ' : ''}${progLabel(p)}`, week: r.prog.includes(p) }));
   const c = causeResultOf(r.i).trim();
   return c ? [{ text: c, week: false }] : [];
 }
@@ -1568,7 +1568,8 @@ function wkByCustomer(open) {
 }
 
 /* ---------- Kyosan 미답변 재촉 메일 (일본어, 표만) ----------
-   주간보고와 같은 미완료 이슈를 일본어로: No · 装置 · 件名 · 経過 · 対応・進捗状況.
+   주간보고와 같은 미완료 이슈를 일본어로: No · 装置 · 件名 · 送付日 · 対応・進捗状況.
+   対応・進捗状況 = 진행 이력의 마지막 메일(.msg)에서 뽑은 요청 사항 원문 (서버 /api/msgrequests).
    件名 = 진행 이력에 처음 올린 파일 이름(확장자 뺌, 보통 교산에 보낸 메일 제목). 없으면 이슈 제목을 번역.
    한국어 글은 서버(/api/translate, Google 번역)로 옮기고, 실패하면 한국어 그대로 둔다. */
 const KY_COLS = ['No', '装置', '件名', '送付日', '対応・進捗状況'];
@@ -1601,6 +1602,12 @@ const kyFile = r => {
   const name = f && (f.label || f.name || String(f.upload || '').split('/').pop());
   return name ? name.replace(/\.[^.\s]{1,5}$/, '') : '';
 };
+// 対応・進捗状況 은 진행 이력의 마지막 일본어 메일(.msg) 본문에서 뽑은 요청 사항(원문)만 쓴다.
+// 고객사에 보낸 한국어 메일은 건너뛴다(가나가 있는 본문만 일본어로 본다).
+const isMsg = f => /\.msg$/i.test(f.upload || f.name || '');
+const kyMails = r => [...r.hist].reverse().flatMap(x => (x.files || []).filter(isMsg).reverse().map(f => f.upload)).filter(Boolean);
+const isJa = t => /[぀-ヿ]/.test(t || '');
+// 메일이 없거나 본문을 못 읽은 이슈만, 예전처럼 진행 이력을 번역해 쓴다.
 // 조치 및 진행상황 줄: 날짜·첨부 수와 번역할 본문을 나눠 둔다
 const kyActs = r => r.hist.length
   ? r.hist.map(p => ({ date: p.date ? mmdd(p.date) : '', body: p.text || '', files: (p.files || []).length, week: r.prog.includes(p) }))
@@ -1608,14 +1615,17 @@ const kyActs = r => r.hist.length
 
 async function kyBuild() {
   const D = wkData(), groups = wkByCustomer(D.open);
-  // 번역할 글 모으기 (같은 글은 한 번만)
-  const want = new Set();
-  D.open.forEach(r => { if (!kyFile(r)) want.add(r.i.title || ''); kyActs(r).forEach(a => want.add(a.body)); });
-  const src = [...want].filter(t => /[가-힣]/.test(t));
-  let ja = new Map(), failed = 0;
-  // 번역과 메일 보낸 시각 읽기를 함께 돌린다
+  // 메일 보낸 시각과 마지막 메일의 요청 사항을 함께 읽는다
   const uploads = D.open.map(r => { const p = kyFirstMail(r); return p && p.files[0].upload; }).filter(Boolean);
   const timesJob = uploads.length ? post('/api/msgtimes', { uploads }).then(j => j.times || {}).catch(() => ({})) : Promise.resolve({});
+  const mails = D.open.flatMap(kyMails);
+  const reqs = mails.length ? await post('/api/msgrequests', { uploads: mails }).then(j => j.texts || {}).catch(() => ({})) : {};
+  const reqOf = r => kyMails(r).map(u => reqs[u]).find(isJa) || '';
+  // 번역할 글 모으기 (같은 글은 한 번만)
+  const want = new Set();
+  D.open.forEach(r => { if (!kyFile(r)) want.add(r.i.title || ''); if (!reqOf(r)) kyActs(r).forEach(a => want.add(a.body)); });
+  const src = [...want].filter(t => /[가-힣]/.test(t));
+  let ja = new Map(), failed = 0;
   if (src.length) {
     try {
       const j = await post('/api/translate', { texts: src });
@@ -1633,12 +1643,12 @@ async function kyBuild() {
   const head = `<thead><tr>${KY_COLS.map(c => `<th ${A('th')}>${c}</th>`).join('')}</tr></thead>`;
   let no = 0;
   const tr = r => {
-    const acts = kyActs(r);
+    const acts = kyActs(r), rq = reqOf(r);
     const td = (v, k) => `<td ${A(k || 'td')}>${v}</td>`;
     return '<tr>' +
       td(++no, 'tdn') + td(esc(r.i.equipment || '-'), 'tdn') + td(esc(subject(r)), 'tdn') +
       td(sent(r), 'tdn') +
-      td(acts.length ? acts.map(a => { const t = esc(actLine(a)).replace(/\n/g, '<br>'); return a.week ? `<b>${t}</b>` : t; }).join('<br>')
+      td(rq ? esc(rq).replace(/\n/g, '<br>') : acts.length ? acts.map(a => { const t = esc(actLine(a)).replace(/\n/g, '<br>'); return a.week ? `<b>${t}</b>` : t; }).join('<br>')
         : `<span ${A('dim')}>記録なし</span>`, 'tdact') + '</tr>';
   };
   const body = groups.length
@@ -1657,7 +1667,8 @@ async function kyBuild() {
     L.push(`▶ ${kyCust(g.name)}（${g.list.length}件）`);
     g.list.forEach(r => {
       L.push(`${++no}. ${r.i.equipment || '-'} | ${subject(r)} | 送付日 ${sent(r)}`);
-      const acts = kyActs(r);
+      const acts = kyActs(r), rq = reqOf(r);
+      if (rq) { L.push(...rq.split('\n').map(l => `   ${l}`)); return; }
       L.push(...(acts.length ? acts.map(a => `   - ${actLine(a).replace(/\s*\n\s*/g, ' ')}`) : ['   - 記録なし']));
     });
   });

@@ -103,4 +103,44 @@ function msgSentTime(file) {
   }
 }
 
-module.exports = { msgSentTime };
+// 본문(평문). 유니코드 본문(0x1000001F)을 먼저, 없으면 ANSI 본문(0x1000001E)을 Shift_JIS 로 읽는다.
+// HTML/RTF 본문만 있는 메일이면 null.
+function msgBody(file) {
+  try {
+    const buf = fs.readFileSync(file);
+    const u = readCfbStream(buf, '__substg1.0_1000001F');
+    if (u) return u.toString('utf16le').replace(/\0+$/, '');
+    const a = readCfbStream(buf, '__substg1.0_1000001E');
+    if (!a) return null;
+    try { return new TextDecoder('shift_jis').decode(a).replace(/\0+$/, ''); } catch { return a.toString('latin1'); }
+  } catch {
+    return null;
+  }
+}
+
+// 메일 본문에서 "요청 사항" 만 남긴다:
+//   맨 위 메일만(인용된 이전 메일 앞에서 자름) → 인사·이름 줄과 맺음말·서명을 뺌
+//   → "■ 要請事項" 같은 제목이 있으면 그 단락만.
+const QUOTE = /^\s*(From:|差出人:|送信者:|-{3,}\s*Original|_{8,})/i;
+const CLOSE = /^\s*(以上|ご面倒をおかけ|[＊*]{5,}|DSS\s+[A-Z]+\s+[A-Z]+\s*$)/;
+const GREET = /^\s*(DSS|株式会社.*|.*事業部.*|.*営業部.*|.*様|.*お世話になって(おり|い)ます.*|DSSの.+です。?|.*ありがとうございま(す|した)。?)\s*$/;
+const REQ_HEAD = /^\s*■\s*(要請事項|依頼事項|お願い事項|ご依頼事項|要望事項)/;
+
+function msgRequest(body) {
+  if (!body) return '';
+  let lines = String(body).replace(/\r\n?/g, '\n').split('\n').map(l => l.replace(/[\s　 ]+$/, ''));
+  const q = lines.findIndex(l => QUOTE.test(l));
+  if (q >= 0) lines = lines.slice(0, q);
+  const c = lines.findIndex(l => CLOSE.test(l));
+  if (c >= 0) lines = lines.slice(0, c);
+  lines = lines.filter(l => l.trim());
+  while (lines.length && GREET.test(lines[0])) lines.shift();
+  const h = lines.findIndex(l => REQ_HEAD.test(l));
+  if (h >= 0) {
+    const end = lines.findIndex((l, k) => k > h && /^\s*■/.test(l));
+    lines = lines.slice(h + 1, end < 0 ? undefined : end);
+  }
+  return lines.map(l => l.trim()).join('\n').slice(0, 1500);
+}
+
+module.exports = { msgSentTime, msgBody, msgRequest };
